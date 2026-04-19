@@ -108,7 +108,7 @@ def get_analysis(symbol, t_pct, s_pct):
             "Stock": symbol, 
             "CMP": round(cmp, 2), 
             "Status": status, 
-            "Target": target_val, 
+            "Target": target_val,
             "StopLoss": sl_val, 
             "Win Prob": f"{win_prob:.1f}%",
             "RSI": round(last['RSI'], 1),
