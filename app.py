@@ -12,10 +12,33 @@ def get_ist():
     # Streamlit Cloud uses UTC, so we add 5.5 hours for India (IST)
     return datetime.now() + timedelta(hours=5, minutes=30)
 
-# --- MARKET STATUS HEADER ---
+# --- MARKET STATUS LOGIC ---
 ist_now = get_ist()
+current_day = ist_now.strftime('%A')
+current_date = ist_now.strftime('%Y-%m-%d')
+
+# Official NSE Holidays 2026 (Update this list annually)
+nse_holidays = [
+    "2026-01-26", "2026-03-06", "2026-03-25", "2026-04-02", "2026-04-10", 
+    "2026-05-01", "2026-10-02", "2026-10-21", "2026-11-10", "2026-12-25"
+]
+
+is_weekend = current_day in ['Saturday', 'Sunday']
+is_holiday = current_date in nse_holidays
+# Market Hours: 9:15 AM to 3:30 PM
+is_time_open = (ist_now.hour == 9 and ist_now.minute >= 15) or (10 <= ist_now.hour < 15) or (ist_now.hour == 15 and ist_now.minute <= 30)
+
+if is_weekend:
+    market_status = "🔴 MARKET CLOSED (WEEKEND)"
+elif is_holiday:
+    market_status = "🔴 MARKET CLOSED (NSE HOLIDAY)"
+elif not is_time_open:
+    market_status = "🔴 MARKET CLOSED (AFTER HOURS)"
+else:
+    market_status = "🟢 MARKET OPEN"
+
+# --- UI HEADER ---
 st.title("📈 1% Strategy Live Monitor")
-market_status = "🟢 MARKET OPEN" if (ist_now.hour == 9 and ist_now.minute >= 15) or (10 <= ist_now.hour < 15) or (ist_now.hour == 15 and ist_now.minute <= 30) else "🔴 MARKET CLOSED"
 st.subheader(f"Current IST: {ist_now.strftime('%H:%M:%S')} | {market_status}")
 
 # --- SIDEBAR: SETTINGS ---
