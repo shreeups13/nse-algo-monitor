@@ -3,65 +3,74 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 import time
-import streamlit.components.v1 as components
 
-# --- APP CONFIGURATION ---
 st.set_page_config(page_title="NSE Pro Monitor", layout="wide")
-
-# --- SOUND & NOTIFICATION COMPONENT ---
-def trigger_alerts(stock_name):
-    # HTML/JS for Sound and Browser Alert
-    notification_html = f"""
-    <script>
-    var audio = new Audio('https://google.com');
-    audio.play();
-    alert("🚀 STRONG BUY SIGNAL: {stock_name}");
-    </script>
-    """
-    components.html(notification_html, height=0)
-
 st.title("📈 1% Strategy Live Monitor")
 
-# --- SIDEBAR: PARAMETERS ---
+# --- SIDEBAR: SETTINGS ---
 with st.sidebar:
     st.header("Settings")
-    target_pct = st.slider("Target Profit (%)", 0.5, 5.0, 1.0) / 100
-    sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
-    user_symbols = st.text_area("Stocks (Comma separated)", "RELIANCE, TCS, ZOMATO, INFY")
+    target_pct = st.sidebar.slider("Target Profit (%)", 0.5, 5.0, 1.0) / 100
+    sl_pct = st.sidebar.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
+    user_symbols = st.sidebar.text_area("Stocks", "RELIANCE, TCS, ZOMATO, INFY")
     SYMBOLS = [s.strip().upper() for s in user_symbols.split(",") if s.strip()]
 
-# --- LOGIC ---
-def analyze_logic(df):
-    if len(df) < 30: return None
-    # EMA/RSI logic here (same as previous code)
-    df['EMA'] = df['Close'].ewm(span=20, adjust=False).mean()
-    # ... [Insert the rest of your RSI/Vol calculation logic here] ...
-    last = df.iloc[-2]
-    # Simple logic for demonstration:
-    if last['Close'] > last['EMA'] and last['Volume'] > df['Volume'].tail(10).mean():
-        return True
-    return False
+# --- LOGIC: CALC WIN PROBABILITY & SIGNALS ---
+def get_analysis(ticker, target, sl):
+    df = yf.download(f"{ticker}.NS", period='1mo', interval='5m', progress=False)
+    if df.empty or len(df) < 50: return None
+
+    # Calculate Win Probability (Backtest last 1 month)
+    df['EMA20'] = df['Close'].ewm(span=20).mean()
+    df['Signal'] = (df['Close'] > df['Open']) & (df['Close'] > df['EMA20'])
+    
+    trades = []
+    signal_indices = df.index[df['Signal']]
+    for idx in signal_indices[-50:]: # Check last 50 signals
+        entry = df.loc[idx, 'Close']
+        res = 0
+        future = df.loc[idx:].head(12)
+        for _, row in future.iterrows():
+            if row['High'] >= entry * (1 + target): res = 1; break
+            if row['Low'] <= entry * (1 - sl): res = -1; break
+        trades.append(res)
+    
+    win_prob = (trades.count(1) / len(trades) * 100) if trades else 0
+    
+    # Live Status
+    last = df.iloc[-1]
+    sentiment = "STRONG BUY" if (last['Close'] > last['Open'] and last['Close'] > last['EMA20']) else "NO SIGNAL"
+    
+    return {
+        "Stock": ticker,
+        "CMP": round(last['Close'], 2),
+        "Status": sentiment,
+        "Target": round(last['Close'] * (1 + target), 2),
+        "StopLoss": round(last['Close'] * (1 - sl), 2),
+        "Win Prob": f"{win_prob:.1f}%",
+        "Time": datetime.now().strftime("%H:%M:%S")
+    }
 
 # --- MAIN DASHBOARD ---
 placeholder = st.empty()
 
 while True:
     with placeholder.container():
-        st.write(f"Last Scan: {datetime.now().strftime('%H:%M:%S')}")
-        raw_data = yf.download([f"{t}.NS" for t in SYMBOLS], period='2d', interval='5m', group_by='ticker', progress=False)
-        
-        found_signal = False
+        results = []
         for stock in SYMBOLS:
-            ticker = f"{stock}.NS"
-            if ticker in raw_data.columns.get_level_values(0):
-                df_stock = raw_data[ticker].dropna()
-                if analyze_logic(df_stock):
-                    st.success(f"🔥 BUY SIGNAL: {stock}")
-                    trigger_alerts(stock) # THIS PLAYS THE SOUND
-                    found_signal = True
+            data = get_analysis(stock, target_pct, sl_pct)
+            if data: results.append(data)
         
-        if not found_signal:
-            st.info("Scanning... No strong signals yet.")
+        if results:
+            df_display = pd.DataFrame(results)
             
+            # Formatting the table for clarity
+            st.table(df_display)
+            
+            # Highlighting Alerts
+            for res in results:
+                if res['Status'] == "STRONG BUY":
+                    st.toast(f"🚀 BUY ALERT: {res['Stock']} at {res['CMP']}")
+        
         time.sleep(300)
         st.rerun()
