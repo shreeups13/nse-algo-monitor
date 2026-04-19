@@ -41,7 +41,7 @@ else: market_status = "🟢 MARKET OPEN"
 
 st.title("📈 1% Strategy Live Monitor")
 st.subheader(f"Current IST: {ist_now.strftime('%H:%M:%S')} | {market_status}")
-st.info("🔊 **Tap screen once** to enable sound alerts for Buy/Sell signals.")
+st.info("🔊 *Tap screen once* to enable sound alerts for Buy/Sell signals.")
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -143,4 +143,3 @@ while True:
         # 5-minute refresh cycle
         time.sleep(300)
         st.rerun()
-
