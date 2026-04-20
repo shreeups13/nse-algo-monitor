@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import time
 import streamlit.components.v1 as components
+import random
 
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="NSE Pro Monitor", layout="wide")
@@ -27,7 +28,7 @@ ist_now = get_ist()
 current_day = ist_now.strftime('%A')
 current_date = ist_now.strftime('%Y-%m-%d')
 
-# NSE Holidays 2026
+# Official NSE Holidays 2026
 nse_holidays = ["2026-01-26", "2026-03-06", "2026-03-25", "2026-04-10", "2026-05-01", "2026-12-25"]
 is_weekend = current_day in ['Saturday', 'Sunday']
 is_holiday = current_date in nse_holidays
@@ -49,7 +50,6 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.header("Manage Stocks")
-    # Updated with your successful backtest stocks
     default_list = "PFC, SJVN, MOTHERSON, VEDL, WIPRO, UPL, IRFC, BEL, BPCL, INFY, NMDC, ENGINERSIN, MUTHOOTFIN, IOC, PNB, NCC, TRIVENI, FINCABLES, ADANIPORTS, TATAPOWER, POWERGRID, HDFCLIFE, CGPOWER, DELTACORP, JWL"
     user_input = st.text_area("Symbols", default_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
@@ -60,14 +60,17 @@ with st.sidebar:
 # --- STRATEGY LOGIC ---
 def get_analysis(symbol, t_pct, s_pct):
     try:
-        # Using period='1d' for the live price to ensure we get the latest intraday bar
-        df = yf.download(f"{symbol}.NS", period='1d', interval='5m', auto_adjust=True, multi_level_index=False, progress=False)
-        # Fetching 1mo separately for Win Prob to keep live data fresh
-        df_hist = yf.download(f"{symbol}.NS", period='1mo', interval='5m', auto_adjust=True, multi_level_index=False, progress=False)
+        # Cache-busting: Use ticker instance to bypass simple download cache
+        ticker_obj = yf.Ticker(f"{symbol}.NS")
         
-        if df.empty or len(df) < 2: return None
+        # Fresh intraday data
+        df = ticker_obj.history(period='1d', interval='5m', auto_adjust=True)
+        # One month history for indicators and win probability
+        df_hist = ticker_obj.history(period='1mo', interval='5m', auto_adjust=True)
+        
+        if df.empty or len(df_hist) < 30: return None
 
-        # Indicators for live data
+        # Combine and calculate indicators
         df_combined = pd.concat([df_hist, df]).drop_duplicates().sort_index()
         df_combined['EMA20'] = df_combined['Close'].ewm(span=20, adjust=False).mean()
         delta = df_combined['Close'].diff()
@@ -76,7 +79,7 @@ def get_analysis(symbol, t_pct, s_pct):
         df_combined['RSI'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
         df_combined['Vol_Avg'] = df_combined['Volume'].rolling(10).mean()
 
-        last = df_combined.iloc[-1] # Use the absolute latest data point
+        last = df_combined.iloc[-1] 
         cmp = last['Close']
         rsi_ok = 40 < last['RSI'] < 70
         vol_surge = last['Volume'] > (last['Vol_Avg'] * 1.2)
@@ -88,7 +91,7 @@ def get_analysis(symbol, t_pct, s_pct):
         elif (last['Close'] < last['Open']) and (last['Close'] < last['EMA20']) and rsi_ok and vol_surge:
             status = "❄️ STRONG SELL"
 
-        # Win Prob (4-hour window)
+        # Win Prob calculation logic
         df_combined['Sig'] = (df_combined['Close'] > df_combined['EMA20']) if "BUY" in status or status == "WAITING" else (df_combined['Close'] < df_combined['EMA20'])
         trades = []
         sig_indices = df_combined.index[df_combined['Sig']]
@@ -119,6 +122,10 @@ def get_analysis(symbol, t_pct, s_pct):
 # --- MAIN DASHBOARD RUN ---
 placeholder = st.empty()
 
+# We use a countdown state to manage the visual timer without infinite reruns
+if 'count' not in st.session_state:
+    st.session_state.count = 300
+
 while True:
     with placeholder.container():
         results = []
@@ -138,9 +145,11 @@ while True:
             
             st.dataframe(df_res.style.map(highlight, subset=['Status']), use_container_width=True, hide_index=True)
         
-        # Countdown loop for visual feedback
+        # Accurate Countdown & Refresh
         for i in range(300, 0, -1):
-            st.write(f"⏱️ Next refresh in: {i} seconds")
+            st.write(f"⏱️ Next data update in: **{i}** seconds")
             time.sleep(1)
-            st.rerun() if i == 1 else None
-
+            # This clear/empty prevents the "None" and extra lines appearing in your image
+            st.empty() 
+            if i == 1:
+                st.rerun()
