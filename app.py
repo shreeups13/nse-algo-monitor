@@ -4,7 +4,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 import time
 import streamlit.components.v1 as components
-import random
 
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="NSE Pro Monitor", layout="wide")
@@ -32,11 +31,11 @@ current_date = ist_now.strftime('%Y-%m-%d')
 nse_holidays = ["2026-01-26", "2026-03-06", "2026-03-25", "2026-04-10", "2026-05-01", "2026-12-25"]
 is_weekend = current_day in ['Saturday', 'Sunday']
 is_holiday = current_date in nse_holidays
-is_time_open = (ist_now.hour == 9 and ist_now.minute >= 15) or (10 <= ist_now.hour < 15) or (ist_now.hour == 15 and ist_now.minute <= 30)
+is_time_open = (9 <= ist_now.hour <= 15) # Simplified for checking logic
 
 if is_weekend: market_status = "🔴 MARKET CLOSED (WEEKEND)"
 elif is_holiday: market_status = "🔴 MARKET CLOSED (HOLIDAY)"
-elif not is_time_open: market_status = "🔴 MARKET CLOSED (AFTER HOURS)"
+elif not (9 <= ist_now.hour <= 15): market_status = "🔴 MARKET CLOSED (AFTER HOURS)"
 else: market_status = "🟢 MARKET OPEN"
 
 # --- UI HEADER ---
@@ -46,58 +45,54 @@ st.subheader(f"Current IST: {ist_now.strftime('%H:%M:%S')} | {market_status}")
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("Settings")
-    target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
-    sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
+    target_pct = st.sidebar.slider("Target (%)", 0.5, 5.0, 1.0) / 100
+    sl_pct = st.sidebar.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.header("Manage Stocks")
     default_list = "PFC, SJVN, MOTHERSON, VEDL, WIPRO, UPL, IRFC, BEL, BPCL, INFY, NMDC, ENGINERSIN, MUTHOOTFIN, IOC, PNB, NCC, TRIVENI, FINCABLES, ADANIPORTS, TATAPOWER, POWERGRID, HDFCLIFE, CGPOWER, DELTACORP, JWL"
     user_input = st.text_area("Symbols", default_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
-    
-    if st.button('🔄 Manual Price Refresh'):
-        st.rerun()
 
-# --- STRATEGY LOGIC ---
-def get_analysis(symbol, t_pct, s_pct):
+# --- CACHE-BUSTING ANALYSIS LOGIC ---
+@st.cache_data(ttl=60) # Only cache for 1 minute as a safety net
+def get_analysis(symbol, t_pct, s_pct, refresh_trigger):
+    ticker = f"{symbol}.NS"
     try:
-        # Cache-busting: Use ticker instance to bypass simple download cache
-        ticker_obj = yf.Ticker(f"{symbol}.NS")
+        # Use Ticker object and history to bypass high-level download cache
+        t = yf.Ticker(ticker)
+        # Fetching 1mo history for indicators and probability
+        df_hist = t.history(period='1mo', interval='5m', auto_adjust=True)
         
-        # Fresh intraday data
-        df = ticker_obj.history(period='1d', interval='5m', auto_adjust=True)
-        # One month history for indicators and win probability
-        df_hist = ticker_obj.history(period='1mo', interval='5m', auto_adjust=True)
-        
-        if df.empty or len(df_hist) < 30: return None
+        if df_hist.empty or len(df_hist) < 30: return None
 
-        # Combine and calculate indicators
-        df_combined = pd.concat([df_hist, df]).drop_duplicates().sort_index()
-        df_combined['EMA20'] = df_combined['Close'].ewm(span=20, adjust=False).mean()
-        delta = df_combined['Close'].diff()
+        # Calculate Indicators
+        df_hist['EMA20'] = df_hist['Close'].ewm(span=20, adjust=False).mean()
+        delta = df_hist['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        df_combined['RSI'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
-        df_combined['Vol_Avg'] = df_combined['Volume'].rolling(10).mean()
+        df_hist['RSI'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
+        df_hist['Vol_Avg'] = df_hist['Volume'].rolling(10).mean()
 
-        last = df_combined.iloc[-1] 
+        last = df_hist.iloc[-1] # The absolute latest available bar
         cmp = last['Close']
+        
+        # Signal Detection
         rsi_ok = 40 < last['RSI'] < 70
         vol_surge = last['Volume'] > (last['Vol_Avg'] * 1.2)
-
-        # Signal Detection
+        
         status = "WAITING"
         if (last['Close'] > last['Open']) and (last['Close'] > last['EMA20']) and rsi_ok and vol_surge:
             status = "🔥 STRONG BUY"
         elif (last['Close'] < last['Open']) and (last['Close'] < last['EMA20']) and rsi_ok and vol_surge:
             status = "❄️ STRONG SELL"
 
-        # Win Prob calculation logic
-        df_combined['Sig'] = (df_combined['Close'] > df_combined['EMA20']) if "BUY" in status or status == "WAITING" else (df_combined['Close'] < df_combined['EMA20'])
+        # Win Prob (4-hour window backtest)
+        df_hist['Sig'] = (df_hist['Close'] > df_hist['EMA20']) if "BUY" in status or status == "WAITING" else (df_hist['Close'] < df_hist['EMA20'])
         trades = []
-        sig_indices = df_combined.index[df_combined['Sig']]
+        sig_indices = df_hist.index[df_hist['Sig']]
         for idx in sig_indices[-20:]:
-            entry = df_combined.loc[idx, 'Close']
-            future = df_combined.loc[idx:].head(48)
+            entry = df_hist.loc[idx, 'Close']
+            future = df_hist.loc[idx:].head(48)
             res = 0
             for _, row in future.iterrows():
                 if "BUY" in status or status == "WAITING":
@@ -119,18 +114,19 @@ def get_analysis(symbol, t_pct, s_pct):
         }
     except: return None
 
-# --- MAIN DASHBOARD RUN ---
+# --- DASHBOARD UI ---
 placeholder = st.empty()
 
-# We use a countdown state to manage the visual timer without infinite reruns
-if 'count' not in st.session_state:
-    st.session_state.count = 300
+# We use a session state variable to force a rerun and bypass cache
+if 'last_update' not in st.session_state:
+    st.session_state.last_update = time.time()
 
 while True:
     with placeholder.container():
         results = []
+        # We pass st.session_state.last_update as a parameter to get_analysis to break the cache
         for stock in SYMBOLS:
-            analysis = get_analysis(stock, target_pct, sl_pct)
+            analysis = get_analysis(stock, target_pct, sl_pct, st.session_state.last_update)
             if analysis:
                 results.append(analysis)
                 if "STRONG" in analysis['Status']:
@@ -145,11 +141,12 @@ while True:
             
             st.dataframe(df_res.style.map(highlight, subset=['Status']), use_container_width=True, hide_index=True)
         
-        # Accurate Countdown & Refresh
+        # Freshness Timer
         for i in range(300, 0, -1):
-            st.write(f"⏱️ Next data update in: **{i}** seconds")
+            st.write(f"🔄 Next live price refresh in: **{i}** seconds")
             time.sleep(1)
-            # This clear/empty prevents the "None" and extra lines appearing in your image
-            st.empty() 
-            if i == 1:
-                st.rerun()
+            st.empty() # Clears the timer text so it doesn't stack
+            
+        # Update session state to force a fresh cache-busted call on next loop
+        st.session_state.last_update = time.time()
+        st.rerun()
