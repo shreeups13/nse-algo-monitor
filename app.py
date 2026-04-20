@@ -1,7 +1,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
 import time
 import streamlit.components.v1 as components
@@ -28,7 +27,7 @@ ist_now = get_ist()
 current_day = ist_now.strftime('%A')
 current_date = ist_now.strftime('%Y-%m-%d')
 
-# Official NSE Holidays 2026
+# NSE Holidays 2026
 nse_holidays = ["2026-01-26", "2026-03-06", "2026-03-25", "2026-04-10", "2026-05-01", "2026-12-25"]
 is_weekend = current_day in ['Saturday', 'Sunday']
 is_holiday = current_date in nse_holidays
@@ -39,85 +38,87 @@ elif is_holiday: market_status = "🔴 MARKET CLOSED (HOLIDAY)"
 elif not is_time_open: market_status = "🔴 MARKET CLOSED (AFTER HOURS)"
 else: market_status = "🟢 MARKET OPEN"
 
+# --- UI HEADER ---
 st.title("📈 1% Strategy Live Monitor")
 st.subheader(f"Current IST: {ist_now.strftime('%H:%M:%S')} | {market_status}")
-st.info("🔊 *Tap screen once* to enable sound alerts for Buy/Sell signals.")
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("Settings")
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
-    user_input = st.text_area("Stocks (Comma Separated)", "PFC, SJVN, MOTHERSON, VEDL, WIPRO, UPL, IRFC, BEL, BPCL, INFY, NMDC, ENGINERSIN, MUTHOOTFIN, IOC, PNB, NCC, TRIVENI, FINCABLES, ADANIPORTS, TATAPOWER, POWERGRID, HDFCLIFE, CGPOWER, DELTACORP, JWL,ADANIPOWER,REDINGTON,COALINDIA")
+    
+    st.header("Manage Stocks")
+    # Updated with your successful backtest stocks
+    default_list = "PFC, SJVN, MOTHERSON, VEDL, WIPRO, UPL, IRFC, BEL, BPCL, INFY, NMDC, ENGINERSIN, MUTHOOTFIN, IOC, PNB, NCC, TRIVENI, FINCABLES, ADANIPORTS, TATAPOWER, POWERGRID, HDFCLIFE, CGPOWER, DELTACORP, JWL"
+    user_input = st.text_area("Symbols", default_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
+    
+    if st.button('🔄 Manual Price Refresh'):
+        st.rerun()
 
-# --- STRATEGY & BACKTEST LOGIC ---
+# --- STRATEGY LOGIC ---
 def get_analysis(symbol, t_pct, s_pct):
     try:
-        # Fetch 1 month of data for a solid probability sample
-        df = yf.download(f"{symbol}.NS", period='1mo', interval='5m', auto_adjust=True, multi_level_index=False, progress=False)
-        if df.empty or len(df) < 50: return None
+        # Using period='1d' for the live price to ensure we get the latest intraday bar
+        df = yf.download(f"{symbol}.NS", period='1d', interval='5m', auto_adjust=True, multi_level_index=False, progress=False)
+        # Fetching 1mo separately for Win Prob to keep live data fresh
+        df_hist = yf.download(f"{symbol}.NS", period='1mo', interval='5m', auto_adjust=True, multi_level_index=False, progress=False)
+        
+        if df.empty or len(df) < 2: return None
 
-        # 1. Indicators
-        df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
-        delta = df['Close'].diff()
+        # Indicators for live data
+        df_combined = pd.concat([df_hist, df]).drop_duplicates().sort_index()
+        df_combined['EMA20'] = df_combined['Close'].ewm(span=20, adjust=False).mean()
+        delta = df_combined['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
-        df['Vol_Avg'] = df['Volume'].rolling(10).mean()
+        df_combined['RSI'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
+        df_combined['Vol_Avg'] = df_combined['Volume'].rolling(10).mean()
 
-        # 2. Live Signal Detection
-        last = df.iloc[-2] # Last completed candle
+        last = df_combined.iloc[-1] # Use the absolute latest data point
         cmp = last['Close']
         rsi_ok = 40 < last['RSI'] < 70
         vol_surge = last['Volume'] > (last['Vol_Avg'] * 1.2)
 
+        # Signal Detection
         status = "WAITING"
         if (last['Close'] > last['Open']) and (last['Close'] > last['EMA20']) and rsi_ok and vol_surge:
             status = "🔥 STRONG BUY"
         elif (last['Close'] < last['Open']) and (last['Close'] < last['EMA20']) and rsi_ok and vol_surge:
             status = "❄️ STRONG SELL"
 
-        # 3. Win Prob (Enhanced Backtest Logic)
-        # We test based on the current detected sentiment
-        test_condition = (df['Close'] > df['EMA20']) if "BUY" in status or status == "WAITING" else (df['Close'] < df['EMA20'])
-        df['Test_Sig'] = test_condition
-        
+        # Win Prob (4-hour window)
+        df_combined['Sig'] = (df_combined['Close'] > df_combined['EMA20']) if "BUY" in status or status == "WAITING" else (df_combined['Close'] < df_combined['EMA20'])
         trades = []
-        sig_indices = df.index[df['Test_Sig']]
-        for idx in sig_indices[-30:]: # Check last 30 occurrences
-            entry = df.loc[idx, 'Close']
-            future = df.loc[idx:].head(48) # 48 candles = 4 hours (Extended window)
+        sig_indices = df_combined.index[df_combined['Sig']]
+        for idx in sig_indices[-20:]:
+            entry = df_combined.loc[idx, 'Close']
+            future = df_combined.loc[idx:].head(48)
             res = 0
             for _, row in future.iterrows():
                 if "BUY" in status or status == "WAITING":
                     if row['High'] >= entry * (1 + t_pct): res = 1; break
                     if row['Low'] <= entry * (1 - s_pct): res = -1; break
-                else: # SELL
+                else:
                     if row['Low'] <= entry * (1 - t_pct): res = 1; break
                     if row['High'] >= entry * (1 + s_pct): res = -1; break
             if res != 0: trades.append(res)
         
         win_prob = (trades.count(1) / len(trades) * 100) if len(trades) > 0 else 0.0
 
-        # Dynamic Target/SL based on Signal Type
-        target_val = round(cmp*(1+t_pct),2) if "BUY" in status else round(cmp*(1-t_pct),2)
-        sl_val = round(cmp*(1-s_pct),2) if "BUY" in status else round(cmp*(1+s_pct),2)
-
         return {
-            "Stock": symbol, 
-            "CMP": round(cmp, 2), 
-            "Status": status, 
-            "Target": target_val,
-            "StopLoss": sl_val, 
-            "Win Prob": f"{win_prob:.1f}%",
-            "RSI": round(last['RSI'], 1),
+            "Stock": symbol, "CMP": round(cmp, 2), "Status": status,
+            "Target": round(cmp*(1+t_pct),2) if "BUY" in status else round(cmp*(1-t_pct),2),
+            "StopLoss": round(cmp*(1-s_pct),2) if "BUY" in status else round(cmp*(1+s_pct),2),
+            "Win Prob": f"{win_prob:.1f}%", "RSI": round(last['RSI'], 1),
             "Time (IST)": get_ist().strftime("%H:%M:%S")
         }
-    except Exception: return None
+    except: return None
 
-# --- DASHBOARD RUNNER ---
+# --- MAIN DASHBOARD RUN ---
 placeholder = st.empty()
+
 while True:
     with placeholder.container():
         results = []
@@ -135,11 +136,11 @@ while True:
                 if val == "❄️ STRONG SELL": return 'background-color: #ffcccb; color: black; font-weight: bold'
                 return ''
             
-            st.dataframe(
-                df_res.style.map(highlight, subset=['Status']), 
-                use_container_width=True, hide_index=True
-            )
+            st.dataframe(df_res.style.map(highlight, subset=['Status']), use_container_width=True, hide_index=True)
         
-        # 5-minute refresh cycle
-        time.sleep(300)
-        st.rerun()
+        # Countdown loop for visual feedback
+        for i in range(300, 0, -1):
+            st.write(f"⏱️ Next refresh in: {i} seconds")
+            time.sleep(1)
+            st.rerun() if i == 1 else None
+
