@@ -48,7 +48,7 @@ with st.sidebar:
     st.header("Settings")
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
-    user_input = st.text_area("Stocks (Comma Separated)", "RELIANCE, TCS, ZOMATO, INFY, ITC, WIPRO, IRFC, TATAPOWER")
+    user_input = st.text_area("Stocks (Comma Separated)", "PFC, SJVN, MOTHERSON, VEDL, WIPRO, UPL, IRFC, BEL, BPCL, INFY, NMDC, ENGINERSIN, MUTHOOTFIN, IOC, PNB, NCC, TRIVENI, FINCABLES, ADANIPORTS, TATAPOWER, POWERGRID, HDFCLIFE, CGPOWER, DELTACORP, JWL")
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
 
 # --- STRATEGY & BACKTEST LOGIC ---
