@@ -8,12 +8,11 @@ import time
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="NSE Pro Monitor", layout="wide", page_icon="📈")
 
-# --- NSE HOLIDAYS 2024 (Example - Update annually) ---
+# --- NSE HOLIDAYS 2026 ---
 NSE_HOLIDAYS = [
-    date(2024, 1, 26), date(2024, 3, 8), date(2024, 3, 25), date(2024, 3, 29),
-    date(2024, 4, 11), date(2024, 4, 17), date(2024, 5, 1), date(2024, 6, 17),
-    date(2024, 7, 17), date(2024, 8, 15), date(2024, 10, 2), date(2024, 11, 1),
-    date(2024, 11, 15), date(2024, 12, 25)
+    date(2026, 1, 26), date(2026, 3, 6), date(2026, 3, 20), date(2026, 3, 25),
+    date(2026, 4, 2), date(2026, 4, 10), date(2026, 4, 14), date(2026, 5, 1),
+    date(2026, 8, 15), date(2026, 10, 2), date(2026, 10, 23), date(2026, 12, 25)
 ]
 
 def get_ist():
@@ -21,7 +20,6 @@ def get_ist():
 
 def is_market_open():
     now = get_ist()
-    # Monday=0, Sunday=6
     if now.weekday() >= 5 or now.date() in NSE_HOLIDAYS:
         return False, "🔴 MARKET CLOSED (HOLIDAY/WEEKEND)"
     
@@ -44,8 +42,9 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("🛠️ Indicators (On/Off)")
-    use_sma = st.checkbox("SMA (20)")
+    use_avg = st.checkbox("Moving Average (20)") # Added Average Option
     use_ema = st.checkbox("EMA (9)")
+    use_sma = st.checkbox("SMA (50)")
     use_lrc = st.checkbox("LRC (Linear Reg)")
     
     st.markdown("---")
@@ -62,10 +61,20 @@ ist_now = get_ist()
 open_status, status_text = is_market_open()
 
 try:
-    indices = yf.download(["^NSEI", "^BSESN"], period="1d", interval="1m", progress=False).iloc[-1]
-    nifty = indices['Close']['^NSEI']
-    sensex = indices['Close']['^BSESN']
-    st.markdown(f"### NIFTY 50: `{nifty:,.2f}` | SENSEX: `{sensex:,.2f}`")
+    indices_data = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)
+    
+    def get_index_stats(ticker):
+        current = indices_data['Close'][ticker].iloc[-1]
+        prev_close = indices_data['Close'][ticker].iloc[0] # Close of previous period
+        change = current - prev_close
+        pct_change = (change / prev_close) * 100
+        color = "green" if change >= 0 else "red"
+        return f"{current:,.2f} (:{color}[{pct_change:+.2f}%])"
+
+    nifty_str = get_index_stats("^NSEI")
+    sensex_str = get_index_stats("^BSESN")
+    
+    st.markdown(f"### NIFTY 50: {nifty_str} | SENSEX: {sensex_str}")
 except:
     st.markdown("### NIFTY 50: `Data Error` | SENSEX: `Data Error`")
 
@@ -93,14 +102,16 @@ def update_dashboard():
             last = df.iloc[-1]
             cmp = float(last['Close'])
             
-            # --- DYNAMIC INDICATORS & CROSSOVER ---
-            crossover_msg = "Neutral"
+            # --- INDICATOR LOGIC ---
+            sig_list = []
+            if use_avg:
+                avg_val = df['Close'].rolling(20).mean().iloc[-1]
+                sig_list.append("Above Avg" if cmp > avg_val else "Below Avg")
             if use_ema:
-                df['ema_val'] = df['Close'].ewm(span=9).mean()
-                if cmp > df['ema_val'].iloc[-1]: crossover_msg = "Above EMA"
-            if use_sma:
-                df['sma_val'] = df['Close'].rolling(window=20).mean()
-                if cmp > df['sma_val'].iloc[-1]: crossover_msg = "Above SMA"
+                ema_val = df['Close'].ewm(span=9).mean().iloc[-1]
+                sig_list.append("Above EMA" if cmp > ema_val else "Below EMA")
+            
+            crossover_msg = " | ".join(sig_list) if sig_list else "Neutral"
             
             # Volume Logic
             vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
@@ -133,9 +144,13 @@ def update_dashboard():
                 "Target": trade_info['target'] if trade_info else 0.0,
                 "SL": trade_info['sl'] if trade_info else 0.0,
                 "Signal": crossover_msg,
-                "Time": trade_info['time'] if trade_info else ist_now.strftime("%H:%M")
+                "Time": trade_info['time'] if trade_info else ist_now.strftime("%H:%M"),
+                "Sort_Key": 1 if trade_info else 0 # For sorting trades to top
             })
-        return pd.DataFrame(results)
+        
+        # Sort so IN TRADE (1) comes before WAITING (0)
+        df_res = pd.DataFrame(results).sort_values(by="Sort_Key", ascending=False).drop(columns=["Sort_Key"])
+        return df_res
     except:
         return pd.DataFrame()
 
@@ -148,15 +163,16 @@ if open_status:
                 styles = [''] * len(row)
                 if row['Status'] != "WAITING":
                     # CMP Column (Index 1)
-                    styles[1] = 'background-color: #90ee90; color: black;' if row['CMP'] >= row['Entry'] else 'background-color: #ffcccb; color: black;'
-                    # Row Logic
-                    row_color = 'background-color: #d4edda; color: black;' if row['Target'] > row['Entry'] else 'background-color: #f8d7da; color: black;'
+                    styles[1] = 'background-color: #90ee90; color: black;' if float(row['CMP']) >= float(row['Entry']) else 'background-color: #ffcccb; color: black;'
+                    # Row Logic based on Target vs Entry
+                    row_color = 'background-color: #d4edda; color: black;' if float(row['Target']) > float(row['Entry']) else 'background-color: #f8d7da; color: black;'
                     for i in [0, 2, 3, 4, 5, 6, 7]: styles[i] = row_color
                 return styles
 
-            # Formatting to 2 Decimals
-            for col in ["CMP", "Entry", "Target", "SL"]:
-                df_final[col] = df_final[col].apply(lambda x: f"{x:.2f}" if x != 0 else "-")
+            # Formatting to 2 Decimals strictly
+            cols_to_format = ["CMP", "Entry", "Target", "SL"]
+            for col in cols_to_format:
+                df_final[col] = df_final[col].apply(lambda x: f"{float(x):.2f}" if float(x) != 0 else "-")
 
             st.dataframe(df_final.style.apply(style_logic, axis=1), use_container_width=True, hide_index=True)
     
@@ -164,6 +180,6 @@ if open_status:
     time.sleep(120)
     st.rerun()
 else:
-    st.info(f"Dashboard is dormant. Market hours: 09:05 to 15:40 IST (Mon-Fri).")
+    st.info(f"Dashboard dormant. Market hours: 09:05 to 15:40 IST (Mon-Fri).")
     time.sleep(60)
     st.rerun()
