@@ -3,7 +3,6 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 import time
-import streamlit.components.v1 as components
 
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="NSE Pro Monitor", layout="wide", page_icon="📈")
@@ -32,13 +31,11 @@ ist_now = get_ist()
 st.title("📈 Persistent Signal Monitor")
 st.subheader(f"Current IST: {ist_now.strftime('%H:%M:%S')}")
 
-# Create a placeholder for the table so it appears BEFORE the sleep timer
 table_placeholder = st.empty()
 
 # --- DATA FETCHING ---
 def update_dashboard():
     results = []
-    # Batch download all symbols at once (Significantly faster than one-by-one)
     tickers = [f"{s}.NS" for s in SYMBOLS]
     
     try:
@@ -46,18 +43,18 @@ def update_dashboard():
         
         for symbol in SYMBOLS:
             ticker_str = f"{symbol}.NS"
+            if ticker_str not in data: continue
             df = data[ticker_str].dropna()
             
-            if df.empty or len(df) < 5:
-                continue
+            if df.empty or len(df) < 5: continue
             
-            # Logic
+            # Original Volume Logic
             df['Vol_Avg'] = df['Volume'].rolling(10).mean()
             last = df.iloc[-1]
             cmp = float(last['Close'])
             vol_surge = last['Volume'] > (last['Vol_Avg'] * 1.2)
             
-            # Trade Check
+            # Trade Exit Check
             if symbol in st.session_state.active_trades:
                 t = st.session_state.active_trades[symbol]
                 if (t['type'] == 'BUY' and cmp >= t['target']) or (t['type'] == 'BUY' and cmp <= t['sl']):
@@ -65,48 +62,82 @@ def update_dashboard():
                 elif (t['type'] == 'SELL' and cmp <= t['target']) or (t['type'] == 'SELL' and cmp >= t['sl']):
                     del st.session_state.active_trades[symbol]
 
-            # Signal Detection
+            # Signal Detection (Entry)
             status = "WAITING"
             if symbol not in st.session_state.active_trades and vol_surge:
                 if last['Close'] > last['Open']:
                     status = "🔥 BUY"
-                    st.session_state.active_trades[symbol] = {'entry': cmp, 'target': cmp*(1+target_pct), 'sl': cmp*(1-sl_pct), 'type': 'BUY', 'time': ist_now.strftime("%H:%M")}
+                    st.session_state.active_trades[symbol] = {
+                        'entry': cmp, 'target': cmp*(1+target_pct), 
+                        'sl': cmp*(1-sl_pct), 'type': 'BUY', 'time': ist_now.strftime("%H:%M")
+                    }
                 elif last['Close'] < last['Open']:
                     status = "❄️ SELL"
-                    st.session_state.active_trades[symbol] = {'entry': cmp, 'target': cmp*(1-target_pct), 'sl': cmp*(1+sl_pct), 'type': 'SELL', 'time': ist_now.strftime("%H:%M")}
+                    st.session_state.active_trades[symbol] = {
+                        'entry': cmp, 'target': cmp*(1-target_pct), 
+                        'sl': cmp*(1+sl_pct), 'type': 'SELL', 'time': ist_now.strftime("%H:%M")
+                    }
 
             trade_info = st.session_state.active_trades.get(symbol)
             results.append({
                 "Stock": symbol,
                 "CMP": round(cmp, 2),
                 "Status": "IN TRADE" if trade_info else status,
-                "Entry": round(trade_info['entry'], 2) if trade_info else "-",
+                "Entry": round(trade_info['entry'], 2) if trade_info else 0, # Use 0 for comparison logic
                 "Target": round(trade_info['target'], 2) if trade_info else "-",
                 "SL": round(trade_info['sl'], 2) if trade_info else "-",
                 "Time": trade_info['time'] if trade_info else ist_now.strftime("%H:%M")
             })
             
         return pd.DataFrame(results)
-    except Exception as e:
-        st.error(f"Error fetching data: {e}")
+    except Exception:
         return pd.DataFrame()
 
-# --- EXECUTION ---
+# --- EXECUTION & STYLING ---
 df_final = update_dashboard()
 
 if not df_final.empty:
     with table_placeholder.container():
-        def style_df(row):
-            if "BUY" in row['Status']: return ['background-color: #d4edda'] * len(row)
-            if "SELL" in row['Status']: return ['background-color: #f8d7da'] * len(row)
-            if row['Status'] == "IN TRADE": return ['background-color: #fff3cd'] * len(row)
-            return [''] * len(row)
-        
-        st.dataframe(df_final.style.apply(style_df, axis=1), use_container_width=True, hide_index=True)
-else:
-    table_placeholder.warning("No data found. Check your internet connection or stock symbols.")
+        def style_logic(row):
+            styles = [''] * len(row)
+            
+            # If currently in a trade or just triggered
+            if row['Status'] == "IN TRADE" or "BUY" in row['Status'] or "SELL" in row['Status']:
+                entry_val = row['Entry']
+                cmp_val = row['CMP']
+                
+                # Logic: CMP > Entry -> Green | CMP < Entry -> Red
+                if cmp_val > entry_val:
+                    # Green background, Black text
+                    color = 'background-color: #90ee90; color: black; font-weight: bold;'
+                else:
+                    # Red background, Black text
+                    color = 'background-color: #ffcccb; color: black; font-weight: bold;'
+                
+                # Apply to Stock Name and Row
+                styles[0] = color
+                for i in range(1, len(row)):
+                    styles[i] = color.replace('font-weight: bold;', '') # Row background
+            
+            else:
+                # Waiting -> White background
+                for i in range(len(row)):
+                    styles[i] = 'background-color: white; color: black;'
+            
+            return styles
 
-# --- THE AUTO-REFRESH TRIGGER ---
-st.write(f"🔄 Last Update: {ist_now.strftime('%H:%M:%S')}. Refreshing in 120s...")
+        # Clean display: Replace Entry 0 with "-" for Waiting stocks
+        display_df = df_final.copy()
+        display_df['Entry'] = display_df['Entry'].replace(0, "-")
+
+        st.dataframe(
+            display_df.style.apply(style_logic, axis=1), 
+            use_container_width=True, 
+            hide_index=True
+        )
+
+# --- REFRESH ---
+st.write(f"🔄 Last Sync: {ist_now.strftime('%H:%M:%S')}. Auto-refresh in 120s...")
 time.sleep(120)
 st.rerun()
+
