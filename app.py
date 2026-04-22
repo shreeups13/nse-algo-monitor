@@ -57,9 +57,10 @@ def update_dashboard():
             # Trade Exit Check
             if symbol in st.session_state.active_trades:
                 t = st.session_state.active_trades[symbol]
-                if (t['type'] == 'BUY' and cmp >= t['target']) or (t['type'] == 'BUY' and cmp <= t['sl']):
-                    del st.session_state.active_trades[symbol]
-                elif (t['type'] == 'SELL' and cmp <= t['target']) or (t['type'] == 'SELL' and cmp >= t['sl']):
+                hit_target = (t['type'] == 'BUY' and cmp >= t['target']) or (t['type'] == 'SELL' and cmp <= t['target'])
+                hit_sl = (t['type'] == 'BUY' and cmp <= t['sl']) or (t['type'] == 'SELL' and cmp >= t['sl'])
+                
+                if hit_target or hit_sl:
                     del st.session_state.active_trades[symbol]
 
             # Signal Detection (Entry)
@@ -83,8 +84,8 @@ def update_dashboard():
                 "Stock": symbol,
                 "CMP": round(cmp, 2),
                 "Status": "IN TRADE" if trade_info else status,
-                "Entry": round(trade_info['entry'], 2) if trade_info else 0, # Use 0 for comparison logic
-                "Target": round(trade_info['target'], 2) if trade_info else "-",
+                "Entry": round(trade_info['entry'], 2) if trade_info else 0,
+                "Target": round(trade_info['target'], 2) if trade_info else 0,
                 "SL": round(trade_info['sl'], 2) if trade_info else "-",
                 "Time": trade_info['time'] if trade_info else ist_now.strftime("%H:%M")
             })
@@ -101,34 +102,37 @@ if not df_final.empty:
         def style_logic(row):
             styles = [''] * len(row)
             
-            # If currently in a trade or just triggered
-            if row['Status'] == "IN TRADE" or "BUY" in row['Status'] or "SELL" in row['Status']:
-                entry_val = row['Entry']
+            # Check if row is in a trade or triggered
+            if row['Status'] != "WAITING":
                 cmp_val = row['CMP']
-                
-                # Logic: CMP > Entry -> Green | CMP < Entry -> Red
-                if cmp_val > entry_val:
-                    # Green background, Black text
-                    color = 'background-color: #90ee90; color: black; font-weight: bold;'
+                entry_val = row['Entry']
+                target_val = row['Target']
+
+                # 1. CMP Column Logic (Index 1)
+                if cmp_val >= entry_val:
+                    styles[1] = 'background-color: #90ee90; color: black;' # Green
                 else:
-                    # Red background, Black text
-                    color = 'background-color: #ffcccb; color: black; font-weight: bold;'
-                
-                # Apply to Stock Name and Row
-                styles[0] = color
-                for i in range(1, len(row)):
-                    styles[i] = color.replace('font-weight: bold;', '') # Row background
-            
-            else:
-                # Waiting -> White background
+                    styles[1] = 'background-color: #ffcccb; color: black;' # Red
+
+                # 2. Remaining Columns Logic (Stock, Status, Entry, Target, SL, Time)
+                if target_val > entry_val:
+                    row_color = 'background-color: #d4edda; color: black;' # Light Green (Buy Logic)
+                elif target_val < entry_val:
+                    row_color = 'background-color: #f8d7da; color: black;' # Light Red (Sell Logic)
+                else:
+                    row_color = ''
+
+                # Apply row_color to all columns EXCEPT CMP (index 1)
                 for i in range(len(row)):
-                    styles[i] = 'background-color: white; color: black;'
+                    if i != 1:
+                        styles[i] = row_color
             
             return styles
 
-        # Clean display: Replace Entry 0 with "-" for Waiting stocks
+        # Display formatting
         display_df = df_final.copy()
         display_df['Entry'] = display_df['Entry'].replace(0, "-")
+        display_df['Target'] = display_df['Target'].replace(0, "-")
 
         st.dataframe(
             display_df.style.apply(style_logic, axis=1), 
@@ -140,4 +144,3 @@ if not df_final.empty:
 st.write(f"🔄 Last Sync: {ist_now.strftime('%H:%M:%S')}. Auto-refresh in 120s...")
 time.sleep(120)
 st.rerun()
-
