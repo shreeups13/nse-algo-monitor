@@ -9,137 +9,119 @@ import streamlit.components.v1 as components
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="NSE Pro Monitor", layout="wide")
 
+# --- SESSION STATE INITIALIZATION ---
+if 'active_trades' not in st.session_state:
+    st.session_state.active_trades = {}  # Format: {symbol: {entry, target, sl, type}}
+
 # --- SOUND & POPUP COMPONENT ---
 def trigger_alert(stock_name, price, signal_type):
     js_code = f"""
     <script>
-    var audio = new Audio('https://google.com');
-    audio.play();
     alert("🚨 {signal_type} ALERT: {stock_name} at {price}");
     </script>
     """
     components.html(js_code, height=0)
 
-# --- INDIA TIME & MARKET LOGIC ---
 def get_ist():
     return datetime.now() + timedelta(hours=5, minutes=30)
 
+# --- MARKET LOGIC ---
 ist_now = get_ist()
 current_day = ist_now.strftime('%A')
-current_date = ist_now.strftime('%Y-%m-%d')
-
-# Official NSE Holidays 2026
-nse_holidays = ["2026-01-26", "2026-03-06", "2026-03-25", "2026-04-10", "2026-05-01", "2026-12-25"]
 is_weekend = current_day in ['Saturday', 'Sunday']
-is_holiday = current_date in nse_holidays
 is_time_open = (ist_now.hour == 9 and ist_now.minute >= 15) or (10 <= ist_now.hour < 15) or (ist_now.hour == 15 and ist_now.minute <= 30)
 
-if is_weekend: market_status = "🔴 MARKET CLOSED (WEEKEND)"
-elif is_holiday: market_status = "🔴 MARKET CLOSED (HOLIDAY)"
-elif not is_time_open: market_status = "🔴 MARKET CLOSED (AFTER HOURS)"
-else: market_status = "🟢 MARKET OPEN"
+market_status = "🟢 MARKET OPEN" if is_time_open and not is_weekend else "🔴 MARKET CLOSED"
 
-st.title("📈 1% Strategy Live Monitor")
+st.title("📈 Persistent Signal Monitor")
 st.subheader(f"Current IST: {ist_now.strftime('%H:%M:%S')} | {market_status}")
-st.info("🔊 **Tap screen once** to enable sound alerts for Buy/Sell signals.")
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("Settings")
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
-    user_input = st.text_area("Stocks (Comma Separated)", "PFC, SJVN, MOTHERSON, VEDL, WIPRO, UPL, IRFC, BEL, BPCL, INFY, NMDC, ENGINERSIN, MUTHOOTFIN, IOC, PNB, NCC, TRIVENI, FINCABLES, ADANIPORTS, TATAPOWER, POWERGRID, HDFCLIFE, CGPOWER, DELTACORP, JWL")
+    user_input = st.text_area("Stocks", "PFC, SJVN, MOTHERSON, VEDL, WIPRO, UPL, IRFC, BEL, BPCL, INFY, NMDC, ENGINERSIN, MUTHOOTFIN, IOC, PNB, NCC, TRIVENI, FINCABLES, ADANIPORTS, TATAPOWER, POWERGRID, HDFCLIFE, CGPOWER, DELTACORP, JWL")
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
+    if st.button("Clear Trade History"):
+        st.session_state.active_trades = {}
+        st.rerun()
 
-# --- STRATEGY & BACKTEST LOGIC ---
-def get_analysis(symbol, t_pct, s_pct):
-    try:
-        # Fetch 1 month of data for a solid probability sample
-        df = yf.download(f"{symbol}.NS", period='1mo', interval='5m', auto_adjust=True, multi_level_index=False, progress=False)
-        if df.empty or len(df) < 50: return None
+# --- CORE LOGIC ---
+def process_signals():
+    results = []
+    for symbol in SYMBOLS:
+        try:
+            df = yf.download(f"{symbol}.NS", period='2d', interval='5m', auto_adjust=True, progress=False)
+            if df.empty or len(df) < 10: continue
+            
+            # Indicators (Simplified: Only Volume Avg)
+            df['Vol_Avg'] = df['Volume'].rolling(10).mean()
+            last = df.iloc[-1]
+            cmp = last['Close']
+            vol_surge = last['Volume'] > (last['Vol_Avg'] * 1.2)
+            
+            # Check Active Trades First (Exit Logic)
+            if symbol in st.session_state.active_trades:
+                trade = st.session_state.active_trades[symbol]
+                hit_target = (trade['type'] == 'BUY' and cmp >= trade['target']) or (trade['type'] == 'SELL' and cmp <= trade['target'])
+                hit_sl = (trade['type'] == 'BUY' and cmp <= trade['sl']) or (trade['type'] == 'SELL' and cmp >= trade['sl'])
+                
+                if hit_target or hit_sl:
+                    reason = "TARGET ✅" if hit_target else "STOP LOSS ❌"
+                    st.toast(f"Trade Closed for {symbol}: {reason}")
+                    del st.session_state.active_trades[symbol]
+            
+            # New Signal Detection (Entry Logic)
+            status = "WAITING"
+            if symbol not in st.session_state.active_trades and vol_surge:
+                if last['Close'] > last['Open']:
+                    status = "🔥 STRONG BUY"
+                    st.session_state.active_trades[symbol] = {
+                        'entry': cmp, 'target': cmp * (1 + target_pct), 'sl': cmp * (1 - sl_pct), 'type': 'BUY', 'time': get_ist().strftime("%H:%M")
+                    }
+                    trigger_alert(symbol, cmp, "BUY")
+                elif last['Close'] < last['Open']:
+                    status = "❄️ STRONG SELL"
+                    st.session_state.active_trades[symbol] = {
+                        'entry': cmp, 'target': cmp * (1 - target_pct), 'sl': cmp * (1 + sl_pct), 'type': 'SELL', 'time': get_ist().strftime("%H:%M")
+                    }
+                    trigger_alert(symbol, cmp, "SELL")
 
-        # 1. Indicators
-        df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain / (loss + 1e-9))))
-        df['Vol_Avg'] = df['Volume'].rolling(10).mean()
-
-        # 2. Live Signal Detection
-        last = df.iloc[-2] # Last completed candle
-        cmp = last['Close']
-        rsi_ok = 40 < last['RSI'] < 70
-        vol_surge = last['Volume'] > (last['Vol_Avg'] * 1.2)
-
-        status = "WAITING"
-        if (last['Close'] > last['Open']) and (last['Close'] > last['EMA20']) and rsi_ok and vol_surge:
-            status = "🔥 STRONG BUY"
-        elif (last['Close'] < last['Open']) and (last['Close'] < last['EMA20']) and rsi_ok and vol_surge:
-            status = "❄️ STRONG SELL"
-
-        # 3. Win Prob (Enhanced Backtest Logic)
-        # We test based on the current detected sentiment
-        test_condition = (df['Close'] > df['EMA20']) if "BUY" in status or status == "WAITING" else (df['Close'] < df['EMA20'])
-        df['Test_Sig'] = test_condition
-        
-        trades = []
-        sig_indices = df.index[df['Test_Sig']]
-        for idx in sig_indices[-30:]: # Check last 30 occurrences
-            entry = df.loc[idx, 'Close']
-            future = df.loc[idx:].head(48) # 48 candles = 4 hours (Extended window)
-            res = 0
-            for _, row in future.iterrows():
-                if "BUY" in status or status == "WAITING":
-                    if row['High'] >= entry * (1 + t_pct): res = 1; break
-                    if row['Low'] <= entry * (1 - s_pct): res = -1; break
-                else: # SELL
-                    if row['Low'] <= entry * (1 - t_pct): res = 1; break
-                    if row['High'] >= entry * (1 + s_pct): res = -1; break
-            if res != 0: trades.append(res)
-        
-        win_prob = (trades.count(1) / len(trades) * 100) if len(trades) > 0 else 0.0
-
-        # Dynamic Target/SL based on Signal Type
-        target_val = round(cmp*(1+t_pct),2) if "BUY" in status else round(cmp*(1-t_pct),2)
-        sl_val = round(cmp*(1-s_pct),2) if "BUY" in status else round(cmp*(1+s_pct),2)
-
-        return {
-            "Stock": symbol, 
-            "CMP": round(cmp, 2), 
-            "Status": status, 
-            "Target": target_val, 
-            "StopLoss": sl_val, 
-            "Win Prob": f"{win_prob:.1f}%",
-            "RSI": round(last['RSI'], 1),
-            "Time (IST)": get_ist().strftime("%H:%M:%S")
-        }
-    except Exception: return None
+            # Update Table Data
+            trade_info = st.session_state.active_trades.get(symbol, None)
+            results.append({
+                "Stock": symbol,
+                "CMP": round(cmp, 2),
+                "Status": "IN TRADE" if trade_info else status,
+                "Entry": round(trade_info['entry'], 2) if trade_info else "-",
+                "Target": round(trade_info['target'], 2) if trade_info else "-",
+                "StopLoss": round(trade_info['sl'], 2) if trade_info else "-",
+                "Time": trade_info['time'] if trade_info else get_ist().strftime("%H:%M:%S")
+            })
+        except: continue
+    return results
 
 # --- DASHBOARD RUNNER ---
 placeholder = st.empty()
 while True:
     with placeholder.container():
-        results = []
-        for stock in SYMBOLS:
-            analysis = get_analysis(stock, target_pct, sl_pct)
-            if analysis:
-                results.append(analysis)
-                if "STRONG" in analysis['Status']:
-                    trigger_alert(analysis['Stock'], analysis['CMP'], analysis['Status'])
-        
-        if results:
-            df_res = pd.DataFrame(results)
-            def highlight(val):
-                if val == "🔥 STRONG BUY": return 'background-color: #90ee90; color: black; font-weight: bold'
-                if val == "❄️ STRONG SELL": return 'background-color: #ffcccb; color: black; font-weight: bold'
-                return ''
+        data = process_signals()
+        if data:
+            df_res = pd.DataFrame(data)
             
-            st.dataframe(
-                df_res.style.map(highlight, subset=['Status']), 
-                use_container_width=True, hide_index=True
-            )
+            def highlight(row):
+                color = ''
+                if "BUY" in row['Status']: color = 'background-color: #90ee90; color: black'
+                elif "SELL" in row['Status']: color = 'background-color: #ffcccb; color: black'
+                elif row['Status'] == "IN TRADE": color = 'background-color: #e0f7fa; color: black'
+                return [color] * len(row)
+
+            st.dataframe(df_res.style.apply(highlight, axis=1), use_container_width=True, hide_index=True)
+            
+            if st.session_state.active_trades:
+                st.write("### 📂 Live Trades Tracking")
+                st.json(st.session_state.active_trades)
         
-        # 5-minute refresh cycle
         time.sleep(300)
         st.rerun()
