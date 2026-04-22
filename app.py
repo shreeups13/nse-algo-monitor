@@ -48,7 +48,7 @@ def update_dashboard():
             
             if df.empty or len(df) < 5: continue
             
-            # Original Volume Logic
+            # Volume Logic
             df['Vol_Avg'] = df['Volume'].rolling(10).mean()
             last = df.iloc[-1]
             cmp = float(last['Close'])
@@ -80,13 +80,15 @@ def update_dashboard():
                     }
 
             trade_info = st.session_state.active_trades.get(symbol)
+            
+            # Core data with 2 decimal rounding
             results.append({
                 "Stock": symbol,
                 "CMP": round(cmp, 2),
                 "Status": "IN TRADE" if trade_info else status,
-                "Entry": round(trade_info['entry'], 2) if trade_info else 0,
-                "Target": round(trade_info['target'], 2) if trade_info else 0,
-                "SL": round(trade_info['sl'], 2) if trade_info else "-",
+                "Entry": round(trade_info['entry'], 2) if trade_info else 0.00,
+                "Target": round(trade_info['target'], 2) if trade_info else 0.00,
+                "SL": round(trade_info['sl'], 2) if trade_info else 0.00,
                 "Time": trade_info['time'] if trade_info else ist_now.strftime("%H:%M")
             })
             
@@ -102,37 +104,42 @@ if not df_final.empty:
         def style_logic(row):
             styles = [''] * len(row)
             
-            # Check if row is in a trade or triggered
             if row['Status'] != "WAITING":
                 cmp_val = row['CMP']
                 entry_val = row['Entry']
                 target_val = row['Target']
 
-                # 1. CMP Column Logic (Index 1)
+                # 1. CMP Column Logic (Index 1) - Red/Green based on Entry
                 if cmp_val >= entry_val:
                     styles[1] = 'background-color: #90ee90; color: black;' # Green
                 else:
                     styles[1] = 'background-color: #ffcccb; color: black;' # Red
 
-                # 2. Remaining Columns Logic (Stock, Status, Entry, Target, SL, Time)
+                # 2. Row logic based on Trade Type (Target vs Entry)
                 if target_val > entry_val:
-                    row_color = 'background-color: #d4edda; color: black;' # Light Green (Buy Logic)
+                    row_color = 'background-color: #d4edda; color: black;' # Light Green (BUY)
                 elif target_val < entry_val:
-                    row_color = 'background-color: #f8d7da; color: black;' # Light Red (Sell Logic)
+                    row_color = 'background-color: #f8d7da; color: black;' # Light Red (SELL)
                 else:
                     row_color = ''
 
-                # Apply row_color to all columns EXCEPT CMP (index 1)
                 for i in range(len(row)):
-                    if i != 1:
+                    if i != 1: # Don't overwrite the CMP specific color
                         styles[i] = row_color
             
             return styles
 
-        # Display formatting
+        # Final cleanup for display - ensuring 2 decimals even for trailing zeros
         display_df = df_final.copy()
-        display_df['Entry'] = display_df['Entry'].replace(0, "-")
-        display_df['Target'] = display_df['Target'].replace(0, "-")
+        
+        # Format numeric columns to strings with 2 decimal places
+        for col in ["CMP", "Entry", "Target", "SL"]:
+            display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and x != 0 else x)
+        
+        # Replace 0.00 placeholders with "-" for clean UI
+        display_df['Entry'] = display_df['Entry'].replace("0.00", "-")
+        display_df['Target'] = display_df['Target'].replace("0.00", "-")
+        display_df['SL'] = display_df['SL'].replace("0.00", "-")
 
         st.dataframe(
             display_df.style.apply(style_logic, axis=1), 
