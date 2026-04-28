@@ -64,6 +64,7 @@ with st.sidebar:
     use_ema = st.checkbox("EMA (9)")
     use_sma = st.checkbox("SMA (50)")
     use_lrc = st.checkbox("LRC (Linear Reg)")
+    use_roc = st.checkbox("ROC (5)") # New ROC Indicator Option
     
     st.markdown("---")
     default_stocks = "PFC, SJVN, MOTHERSON, VEDL, WIPRO, UPL, IRFC, BEL, BPCL, INFY, NMDC, ENGINERSIN, MUTHOOTFIN, IOC, PNB, NCC, TRIVENI, FINCABLES, ADANIPORTS, TATAPOWER, POWERGRID, HDFCLIFE, CGPOWER, DELTACORP, JWL"
@@ -119,6 +120,12 @@ def update_dashboard():
             if use_avg: sigs.append("Above Avg" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "Below Avg")
             if use_ema: sigs.append("Above EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "Below EMA")
             if use_sma: sigs.append("Above SMA" if cmp > df['Close'].rolling(50).mean().iloc[-1] else "Below SMA")
+            if use_roc:
+                # ROC Calculation: ((Price - Price_5_periods_ago) / Price_5_periods_ago) * 100
+                price_5_ago = df['Close'].iloc[-6]
+                roc_val = ((cmp - price_5_ago) / price_5_ago) * 100
+                sigs.append(f"ROC: {roc_val:+.2f}%")
+            
             sig_msg = " | ".join(sigs) if sigs else "Neutral"
             
             # Volume Strategy
