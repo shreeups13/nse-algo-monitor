@@ -64,25 +64,21 @@ with st.sidebar:
     use_ema = st.checkbox("EMA (9)")
     use_sma = st.checkbox("SMA (50)")
     use_lrc = st.checkbox("LRC (Linear Reg)")
-    use_roc = st.checkbox("ROC (5)") # New ROC Indicator Option
+    use_roc = st.checkbox("ROC (5)") 
     
     st.markdown("---")
-    default_stocks =
-" UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP,
-TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL,
-ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC,
-KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON,
-ADANIGREEN, AVANTIFEED, SJVN,
-NLCINDIA, STAR,
-RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL,
-PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD,
-HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL,
-SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS,
-NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL,
-ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK,
-TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC,
-TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL,
-HFCL, PFC, BEL, PNB, CGPOWER, CUB"
+    # UPDATED WATCHLIST WITH YOUR PROVIDED STOCKS
+    default_stocks = (
+        "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, "
+        "HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, "
+        "IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, "
+        "SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, "
+        "STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, "
+        "OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, "
+        "RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, "
+        "TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, "
+        "BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
+    )
     user_input = st.text_area("Watchlist (Comma Separated)", default_stocks)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
@@ -118,7 +114,6 @@ def update_dashboard():
     tickers = [f"{s}.NS" for s in SYMBOLS]
     
     try:
-        # Fetching data for symbols
         data = yf.download(tickers, period='5d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
         
         for symbol in SYMBOLS:
@@ -130,23 +125,18 @@ def update_dashboard():
             last = df.iloc[-1]
             cmp = float(last['Close'])
             
-            # Indicator Calculations
             sigs = []
             if use_avg: sigs.append("Above Avg" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "Below Avg")
             if use_ema: sigs.append("Above EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "Below EMA")
             if use_sma: sigs.append("Above SMA" if cmp > df['Close'].rolling(50).mean().iloc[-1] else "Below SMA")
             if use_roc:
-                # ROC Calculation: ((Price - Price_5_periods_ago) / Price_5_periods_ago) * 100
                 price_5_ago = df['Close'].iloc[-6]
                 roc_val = ((cmp - price_5_ago) / price_5_ago) * 100
                 sigs.append(f"ROC: {roc_val:+.2f}%")
             
             sig_msg = " | ".join(sigs) if sigs else "Neutral"
-            
-            # Volume Strategy
             vol_surge = last['Volume'] > (df['Volume'].rolling(10).mean().iloc[-1] * 1.2)
             
-            # Management
             if symbol in st.session_state.active_trades:
                 t = st.session_state.active_trades[symbol]
                 if (t['type'] == 'BUY' and cmp >= t['target']) or (t['type'] == 'BUY' and cmp <= t['sl']) or \
@@ -154,7 +144,6 @@ def update_dashboard():
                     del st.session_state.active_trades[symbol]
                     save_persistent_trades(st.session_state.active_trades)
 
-            # Signal Trigger
             status = "WAITING"
             if symbol not in st.session_state.active_trades and vol_surge:
                 if last['Close'] > last['Open']:
@@ -186,14 +175,11 @@ if not df_final.empty:
         def style_rows(row):
             styles = [''] * len(row)
             if row['Status'] != "WAITING":
-                # CMP Column
                 styles[1] = 'background-color: #90ee90; color: black;' if float(row['CMP']) >= float(row['Entry']) else 'background-color: #ffcccb; color: black;'
-                # Row Color (Buy vs Sell direction)
                 row_c = 'background-color: #d4edda; color: black;' if float(row['Target']) > float(row['Entry']) else 'background-color: #f8d7da; color: black;'
                 for i in [0, 2, 3, 4, 5, 6, 7]: styles[i] = row_c
             return styles
 
-        # 2-Decimal Display Formatting
         for col in ["CMP", "Entry", "Target", "SL"]:
             df_final[col] = df_final[col].apply(lambda x: f"{float(x):.2f}" if float(x) != 0 else "-")
 
