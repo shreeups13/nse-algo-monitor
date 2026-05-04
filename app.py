@@ -22,7 +22,7 @@ def load_persistent_trades():
 def save_persistent_trades(trades):
     with open(TRADES_FILE, "w") as f: json.dump(trades, f)
 
-# --- NSE HOLIDAYS 2026 (Updated) ---
+# --- NSE HOLIDAYS 2026 ---
 NSE_HOLIDAYS = [
     date(2026, 1, 26), date(2026, 3, 3), date(2026, 3, 26), date(2026, 3, 31),
     date(2026, 4, 3), date(2026, 4, 14), date(2026, 5, 1), date(2026, 5, 28),
@@ -41,7 +41,6 @@ def is_market_open():
     if start_time <= now <= end_time: return True, "🟢 MARKET OPEN"
     return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
 
-# --- SESSION STATE ---
 if 'active_trades' not in st.session_state:
     st.session_state.active_trades = load_persistent_trades()
 
@@ -56,9 +55,8 @@ with st.sidebar:
     st.subheader("🛠️ Indicators")
     use_avg = st.checkbox("Moving Average (20)", value=True)
     use_ema = st.checkbox("EMA (9)", value=True)
-    use_sma = st.checkbox("SMA (50)")
     use_roc = st.checkbox("ROC (5)", value=True)
-    use_lrc = st.checkbox("LRC (Linear Reg)", value=True) # Checkbox exists
+    use_lrc = st.checkbox("LRC (Linear Reg)", value=True)
     
     st.markdown("---")
     default_stocks = (
@@ -80,7 +78,7 @@ with st.sidebar:
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
-# --- HEADER (INDICES) ---
+# --- HEADER ---
 ist_now = get_ist()
 open_status, status_text = is_market_open()
 
@@ -113,26 +111,31 @@ def update_dashboard():
             cmp = float(df['Close'].iloc[-1])
             qty = int(capital // cmp)
             
-            # Indicator & ROC Logic
             sigs = []
             roc_val = 0.0
-            if use_roc:
-                p5 = df['Close'].iloc[-6]
-                roc_val = ((cmp - p5) / p5) * 100
-                sigs.append(f"ROC: {roc_val:+.2f}%")
-            if use_avg: sigs.append("↑Avg" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "↓Avg")
-            if use_ema: sigs.append("↑EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA")
+            prob_score = 0
             
-            # LRC Calculation (Added as requested)
-            if use_lrc:
-                y = df['Close'].tail(14).values
-                x = np.arange(len(y))
-                slope, intercept = np.polyfit(x, y, 1)
-                sigs.append("LRC:↑" if slope > 0 else "LRC:↓")
+            # LRC
+            y = df['Close'].tail(14).values
+            x = np.arange(len(y))
+            slope, intercept = np.polyfit(x, y, 1)
+            lrc_dir = "UP" if slope > 0 else "DOWN"
+            if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
+            
+            # ROC
+            p5 = df['Close'].iloc[-6]
+            roc_val = ((cmp - p5) / p5) * 100
+            if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
+            
+            # Probability Scoring
+            vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
+            vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
+            
+            if vol_surge: prob_score += 1
+            if abs(roc_val) > 0.5: prob_score += 1
             
             sig_msg = " | ".join(sigs) if sigs else "Neutral"
-            vol_surge = df['Volume'].iloc[-1] > (df['Volume'].rolling(10).mean().iloc[-1] * 1.2)
-
+            
             # Trade Management
             if symbol in st.session_state.active_trades:
                 t = st.session_state.active_trades[symbol]
@@ -141,24 +144,31 @@ def update_dashboard():
                     del st.session_state.active_trades[symbol]
                     save_persistent_trades(st.session_state.active_trades)
 
-            # Signals
             status = "WAITING"
             if symbol not in st.session_state.active_trades and vol_surge:
                 if df['Close'].iloc[-1] > df['Open'].iloc[-1]:
                     status, t_type = "🔥 BUY", "BUY"
-                    st.session_state.active_trades[symbol] = {'entry': cmp, 'target': cmp*(1+target_pct), 'sl': cmp*(1-sl_pct), 'type': t_type, 'time': ist_now.strftime("%H:%M")}
+                    if lrc_dir == "UP": prob_score += 1 # Trend alignment bonus
+                    st.session_state.active_trades[symbol] = {'entry': cmp, 'target': cmp*(1+target_pct), 'sl': cmp*(1-sl_pct), 'type': t_type, 'time': ist_now.strftime("%H:%M"), 'prob': prob_score}
                 elif df['Close'].iloc[-1] < df['Open'].iloc[-1]:
                     status, t_type = "❄️ SELL", "SELL"
-                    st.session_state.active_trades[symbol] = {'entry': cmp, 'target': cmp*(1-target_pct), 'sl': cmp*(1+sl_pct), 'type': t_type, 'time': ist_now.strftime("%H:%M")}
+                    if lrc_dir == "DOWN": prob_score += 1 # Trend alignment bonus
+                    st.session_state.active_trades[symbol] = {'entry': cmp, 'target': cmp*(1-target_pct), 'sl': cmp*(1+sl_pct), 'type': t_type, 'time': ist_now.strftime("%H:%M"), 'prob': prob_score}
                 save_persistent_trades(st.session_state.active_trades)
 
             trade = st.session_state.active_trades.get(symbol)
+            
+            # Final probability text
+            current_prob = trade['prob'] if trade else prob_score
+            prob_text = "LOW" if current_prob <= 1 else "MED" if current_prob == 2 else "HIGH"
+
             results.append({
                 "Stock": symbol, "Qty": qty, "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0,
-                "Signal": sig_msg, "Time": trade['time'] if trade else ist_now.strftime("%H:%M"),
+                "Signal": sig_msg, "Prob": prob_text,
+                "Time": trade['time'] if trade else ist_now.strftime("%H:%M"),
                 "Status": "IN TRADE" if trade else status,
                 "InTrade": 1 if trade else 0,
                 "ROC_Sort": abs(roc_val) if abs(roc_val) > 1 else 0
@@ -184,7 +194,6 @@ if not df_final.empty:
 
         st.dataframe(df_final.style.apply(style_rows, axis=1), use_container_width=True, hide_index=True)
 
-# --- AUTO REFRESH ---
 time.sleep(120 if open_status else 300)
 st.rerun()
 
