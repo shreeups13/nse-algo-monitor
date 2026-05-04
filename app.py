@@ -58,6 +58,7 @@ with st.sidebar:
     use_ema = st.checkbox("EMA (9)", value=True)
     use_sma = st.checkbox("SMA (50)")
     use_roc = st.checkbox("ROC (5)", value=True)
+    use_lrc = st.checkbox("LRC (Linear Reg)", value=True) # Checkbox exists
     
     st.markdown("---")
     default_stocks = (
@@ -84,7 +85,6 @@ ist_now = get_ist()
 open_status, status_text = is_market_open()
 
 try:
-    # Use BSESN for Sensex and NSEI for Nifty
     indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)
     def get_index_ui(ticker, label):
         curr = indices['Close'][ticker].iloc[-1]
@@ -123,6 +123,13 @@ def update_dashboard():
             if use_avg: sigs.append("↑Avg" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "↓Avg")
             if use_ema: sigs.append("↑EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA")
             
+            # LRC Calculation (Added as requested)
+            if use_lrc:
+                y = df['Close'].tail(14).values
+                x = np.arange(len(y))
+                slope, intercept = np.polyfit(x, y, 1)
+                sigs.append("LRC:↑" if slope > 0 else "LRC:↓")
+            
             sig_msg = " | ".join(sigs) if sigs else "Neutral"
             vol_surge = df['Volume'].iloc[-1] > (df['Volume'].rolling(10).mean().iloc[-1] * 1.2)
 
@@ -157,7 +164,6 @@ def update_dashboard():
                 "ROC_Sort": abs(roc_val) if abs(roc_val) > 1 else 0
             })
         
-        # 1) Sorting: In Trade first, then by high ROC momentum (>1 or <-1)
         final_df = pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Sort"], ascending=False).drop(columns=["InTrade", "ROC_Sort"])
         return final_df
     except: return pd.DataFrame()
