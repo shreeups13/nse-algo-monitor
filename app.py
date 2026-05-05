@@ -33,8 +33,7 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
-    # ADDED FULL STOCK LIST BELOW
-    default_stocks = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
+    default_stocks = "DELHIVERY, TTML, PETRONET, VEDL, AVANTIFEED, STAR, RAILTEL, COALINDIA, NCC, DELTACORP, UPL, ITC, WIPRO, ONGC, RELIANCE, PFC, BEL, PNB"
     user_input = st.text_area("Watchlist (Comma Separated)", default_stocks)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
 
@@ -69,17 +68,22 @@ def get_dashboard_data():
 
             cmp = float(df['Close'].iloc[-1])
             
+            # --- CALCULATIONS ---
             y = df['Close'].tail(14).values
             slope, _ = np.polyfit(np.arange(len(y)), y, 1)
             lrc_dir = "UP" if slope > 0 else "DOWN"
+            
             roc = ((cmp - df['Close'].iloc[-6]) / df['Close'].iloc[-6]) * 100
+            
             vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
             vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
 
+            # --- PROBABILITY SCORING ---
             prob_score = 0
             if vol_surge: prob_score += 1
             if abs(roc) > 0.5: prob_score += 1
             
+            # --- TRADE LOGIC ---
             trade = st.session_state.active_trades.get(symbol)
             status = "WAITING"
             
@@ -92,12 +96,16 @@ def get_dashboard_data():
                     save_persistent_trades(st.session_state.active_trades)
             elif vol_surge:
                 t_type = "BUY" if df['Close'].iloc[-1] > df['Open'].iloc[-1] else "SELL"
+                # Bonus point if trend matches direction
                 if (t_type == "BUY" and lrc_dir == "UP") or (t_type == "SELL" and lrc_dir == "DOWN"):
                     prob_score += 1
+                
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
+                
                 entry = cmp
                 target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
                 sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
+                
                 st.session_state.active_trades[symbol] = {
                     'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
                     'time': ist_now.strftime("%H:%M"), 'prob_text': p_text
@@ -127,24 +135,17 @@ df_raw = get_dashboard_data()
 if not df_raw.empty:
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
-    def apply_cmp_background(df):
-        style_df = pd.DataFrame('', index=df.index, columns=df.columns)
-        for i, row in df.iterrows():
-            if row['Status'] == "IN TRADE" and row['Entry'] > 0:
-                # Green background if Profit (CMP >= Entry), Red if Loss (CMP < Entry)
-                bg_color = '#22c55e' if row['CMP'] >= row['Entry'] else '#ef4444'
-                style_df.loc[i, 'CMP'] = f'background-color: {bg_color}; color: white; font-weight: bold'
-        return style_df
+    def highlight_trade(row):
+        if row['Status'] == "IN TRADE":
+            c = '#d4edda' if row['Target'] > row['Entry'] else '#f8d7da'
+            return [f'background-color: {c}; color: black'] * len(row)
+        return [''] * len(row)
 
     disp_df = df_sorted.copy()
-    styled_view = disp_df.style.apply(apply_cmp_background, axis=None).format({
-        "CMP": "{:.2f}", 
-        "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
-        "Target": lambda x: f"{x:.2f}" if x > 0 else "-",
-        "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
-    })
+    for col in ["CMP", "Entry", "Target", "SL"]:
+        disp_df[col] = disp_df[col].apply(lambda x: f"{x:.2f}" if x > 0 else "-")
 
-    st.dataframe(styled_view, use_container_width=True, hide_index=True)
+    st.dataframe(disp_df.style.apply(highlight_trade, axis=1), use_container_width=True, hide_index=True)
 else:
     st.info("🔄 Synching Data...")
 
