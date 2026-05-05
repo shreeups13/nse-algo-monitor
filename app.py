@@ -37,7 +37,7 @@ def is_market_open():
     now = get_ist()
     if now.weekday() >= 5 or now.date() in NSE_HOLIDAYS:
         return False, "🔴 MARKET CLOSED (WEEKEND/HOLIDAY)"
-    start_time, end_time = now.replace(hour=9, minute=15), now.replace(hour=15, minute=30)
+    start_time, end_time = now.replace(hour=9, minute=15, second=0), now.replace(hour=15, minute=30, second=0)
     if start_time <= now <= end_time: return True, "🟢 MARKET OPEN"
     return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
 
@@ -59,17 +59,7 @@ with st.sidebar:
     use_lrc = st.checkbox("LRC (Linear Reg)", value=True)
     
     st.markdown("---")
-    default_stocks = (
-        "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, "
-        "HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, "
-        "IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, "
-        "SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, "
-        "STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, "
-        "OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, "
-        "RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, "
-        "TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, "
-        "BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
-    )
+    default_stocks = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
     user_input = st.text_area("Watchlist", default_stocks)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
@@ -83,15 +73,20 @@ ist_now = get_ist()
 open_status, status_text = is_market_open()
 
 try:
+    # Fixed Indexing for Multi-index download
     indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)
     def get_index_ui(ticker, label):
-        curr = indices['Close'][ticker].iloc[-1]
-        prev = indices['Close'][ticker].iloc[0]
+        # Extract closing prices specifically for the ticker
+        close_series = indices['Close'][ticker].dropna()
+        curr = close_series.iloc[-1]
+        prev = close_series.iloc[0]
         pct = ((curr - prev) / prev) * 100
         color = "green" if pct >= 0 else "red"
         return f"{label}: **{curr:,.2f}** (:{color}[{pct:+.2f}%])"
+    
     st.markdown(f"### {get_index_ui('^NSEI', 'NIFTY 50')} | {get_index_ui('^BSESN', 'SENSEX')}")
-except: st.markdown("### Indices: `Refreshing...`")
+except Exception as e:
+    st.markdown("### Indices: `Service Busy`")
 
 st.subheader(f"IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 table_placeholder = st.empty()
@@ -101,12 +96,15 @@ def update_dashboard():
     results = []
     tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
-        data = yf.download(tickers, period='5d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+        # Increase period to 7d to ensure 20 candles are always available
+        data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+        
         for symbol in SYMBOLS:
             ticker_str = f"{symbol}.NS"
-            if ticker_str not in data or data[ticker_str].empty: continue
+            if ticker_str not in data: continue
+            
             df = data[ticker_str].dropna()
-            if len(df) < 20: continue
+            if df.empty or len(df) < 20: continue
             
             cmp = float(df['Close'].iloc[-1])
             qty = int(capital // cmp)
@@ -115,28 +113,33 @@ def update_dashboard():
             roc_val = 0.0
             prob_score = 0
             
-            # LRC
+            # LRC Logic
             y = df['Close'].tail(14).values
             x = np.arange(len(y))
             slope, intercept = np.polyfit(x, y, 1)
             lrc_dir = "UP" if slope > 0 else "DOWN"
             if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
             
-            # ROC
+            # ROC Logic
             p5 = df['Close'].iloc[-6]
             roc_val = ((cmp - p5) / p5) * 100
             if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
             
-            # Probability Scoring
+            # Indicators
+            if use_avg: sigs.append("↑Avg" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "↓Avg")
+            if use_ema: sigs.append("↑EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA")
+
+            # Vol Surge
             vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
             vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
             
+            # Scoring
             if vol_surge: prob_score += 1
             if abs(roc_val) > 0.5: prob_score += 1
             
             sig_msg = " | ".join(sigs) if sigs else "Neutral"
             
-            # Trade Management
+            # Trade Update
             if symbol in st.session_state.active_trades:
                 t = st.session_state.active_trades[symbol]
                 if (t['type'] == 'BUY' and (cmp >= t['target'] or cmp <= t['sl'])) or \
@@ -148,17 +151,15 @@ def update_dashboard():
             if symbol not in st.session_state.active_trades and vol_surge:
                 if df['Close'].iloc[-1] > df['Open'].iloc[-1]:
                     status, t_type = "🔥 BUY", "BUY"
-                    if lrc_dir == "UP": prob_score += 1 # Trend alignment bonus
+                    if lrc_dir == "UP": prob_score += 1
                     st.session_state.active_trades[symbol] = {'entry': cmp, 'target': cmp*(1+target_pct), 'sl': cmp*(1-sl_pct), 'type': t_type, 'time': ist_now.strftime("%H:%M"), 'prob': prob_score}
                 elif df['Close'].iloc[-1] < df['Open'].iloc[-1]:
                     status, t_type = "❄️ SELL", "SELL"
-                    if lrc_dir == "DOWN": prob_score += 1 # Trend alignment bonus
+                    if lrc_dir == "DOWN": prob_score += 1
                     st.session_state.active_trades[symbol] = {'entry': cmp, 'target': cmp*(1-target_pct), 'sl': cmp*(1+sl_pct), 'type': t_type, 'time': ist_now.strftime("%H:%M"), 'prob': prob_score}
                 save_persistent_trades(st.session_state.active_trades)
 
             trade = st.session_state.active_trades.get(symbol)
-            
-            # Final probability text
             current_prob = trade['prob'] if trade else prob_score
             prob_text = "LOW" if current_prob <= 1 else "MED" if current_prob == 2 else "HIGH"
 
@@ -174,9 +175,9 @@ def update_dashboard():
                 "ROC_Sort": abs(roc_val) if abs(roc_val) > 1 else 0
             })
         
-        final_df = pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Sort"], ascending=False).drop(columns=["InTrade", "ROC_Sort"])
-        return final_df
-    except: return pd.DataFrame()
+        return pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Sort"], ascending=False).drop(columns=["InTrade", "ROC_Sort"])
+    except Exception as e:
+        return pd.DataFrame()
 
 # --- RENDER ---
 df_final = update_dashboard()
@@ -189,11 +190,13 @@ if not df_final.empty:
                 for i in range(len(row)): styles[i] = row_c
             return styles
 
+        # Apply formatting to displayable dataframe only
+        display_df = df_final.copy()
         for col in ["CMP", "Entry", "Target", "SL"]:
-            df_final[col] = df_final[col].apply(lambda x: f"{float(x):.2f}" if float(x) != 0 else "-")
+            display_df[col] = display_df[col].apply(lambda x: f"{float(x):.2f}" if float(x) != 0 else "-")
 
-        st.dataframe(df_final.style.apply(style_rows, axis=1), use_container_width=True, hide_index=True)
+        st.dataframe(display_df.style.apply(style_rows, axis=1), use_container_width=True, hide_index=True)
 
+# Auto Refresh logic
 time.sleep(120 if open_status else 300)
 st.rerun()
-
