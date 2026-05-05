@@ -37,32 +37,28 @@ with st.sidebar:
     user_input = st.text_area("Watchlist (Comma Separated)", default_stocks)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
 
-# --- 1. FETCH INDICES (Run this first so it never stays 'Refreshing') ---
+# --- 1. FETCH INDICES ---
 ist_now = datetime.now() + timedelta(hours=5, minutes=30)
 try:
-    # Use period='1d' for faster index fetching
     idx_raw = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)['Close']
     n_curr = idx_raw["^NSEI"].dropna().iloc[-1]
     s_curr = idx_raw["^BSESN"].dropna().iloc[-1]
     n_prev = idx_raw["^NSEI"].dropna().iloc[0]
     s_prev = idx_raw["^BSESN"].dropna().iloc[0]
-    
     n_chg = ((n_curr - n_prev) / n_prev) * 100
     s_chg = ((s_curr - s_prev) / s_prev) * 100
-    
     st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
 except:
     st.markdown("### Indices: `Connecting to NSE...`")
 
 st.subheader(f"IST: {ist_now.strftime('%H:%M:%S')} | 🟢 MARKET LIVE")
 
-# --- 2. FETCH DATA FUNCTION ---
+# --- 2. DATA FETCHING ---
 def get_dashboard_data():
     results = []
     tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
-        # Batch download is key to preventing the 'disappearing' data issue
-        data = yf.download(tickers, period='5d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+        data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
         
         for symbol in SYMBOLS:
             t_str = f"{symbol}.NS"
@@ -72,35 +68,51 @@ def get_dashboard_data():
 
             cmp = float(df['Close'].iloc[-1])
             
-            # Indicators
+            # --- CALCULATIONS ---
             y = df['Close'].tail(14).values
             slope, _ = np.polyfit(np.arange(len(y)), y, 1)
+            lrc_dir = "UP" if slope > 0 else "DOWN"
+            
             roc = ((cmp - df['Close'].iloc[-6]) / df['Close'].iloc[-6]) * 100
-            vol_surge = df['Volume'].iloc[-1] > (df['Volume'].rolling(10).mean().iloc[-1] * 1.2)
+            
+            vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
+            vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
 
-            # Trade Logic
+            # --- PROBABILITY SCORING ---
+            prob_score = 0
+            if vol_surge: prob_score += 1
+            if abs(roc) > 0.5: prob_score += 1
+            
+            # --- TRADE LOGIC ---
             trade = st.session_state.active_trades.get(symbol)
             status = "WAITING"
             
             if trade:
                 status = "IN TRADE"
-                # Check Exit
+                p_text = trade.get('prob_text', "MED")
                 if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
                    (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
                     del st.session_state.active_trades[symbol]
                     save_persistent_trades(st.session_state.active_trades)
             elif vol_surge:
-                # Logic for New Entry
                 t_type = "BUY" if df['Close'].iloc[-1] > df['Open'].iloc[-1] else "SELL"
+                # Bonus point if trend matches direction
+                if (t_type == "BUY" and lrc_dir == "UP") or (t_type == "SELL" and lrc_dir == "DOWN"):
+                    prob_score += 1
+                
+                p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
+                
                 entry = cmp
                 target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
                 sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
                 
                 st.session_state.active_trades[symbol] = {
                     'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
-                    'time': ist_now.strftime("%H:%M")
+                    'time': ist_now.strftime("%H:%M"), 'prob_text': p_text
                 }
                 save_persistent_trades(st.session_state.active_trades)
+            else:
+                p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
             results.append({
                 "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
@@ -108,6 +120,7 @@ def get_dashboard_data():
                 "Target": trade['target'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0,
                 "Signal": f"LRC:{'↑' if slope > 0 else '↓'} | ROC:{roc:.2f}%",
+                "Prob": p_text,
                 "Status": status, 
                 "InTrade": 1 if trade else 0,
                 "ROC_Val": abs(roc)
@@ -116,29 +129,25 @@ def get_dashboard_data():
     except:
         return pd.DataFrame()
 
-# --- 3. RENDER TABLE ---
+# --- 3. RENDER ---
 df_raw = get_dashboard_data()
 
 if not df_raw.empty:
-    # Sort: Active trades first, then biggest movers
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
     def highlight_trade(row):
         if row['Status'] == "IN TRADE":
-            # Green for Long, Red for Short
             c = '#d4edda' if row['Target'] > row['Entry'] else '#f8d7da'
             return [f'background-color: {c}; color: black'] * len(row)
         return [''] * len(row)
 
-    # Final Display Formatting
     disp_df = df_sorted.copy()
     for col in ["CMP", "Entry", "Target", "SL"]:
         disp_df[col] = disp_df[col].apply(lambda x: f"{x:.2f}" if x > 0 else "-")
 
     st.dataframe(disp_df.style.apply(highlight_trade, axis=1), use_container_width=True, hide_index=True)
 else:
-    st.info("🔄 Synching with Exchange... Please wait 5 seconds.")
+    st.info("🔄 Synching Data...")
 
-# --- 4. REFRESH ---
-time.sleep(60) # Refresh every 1 minute
+time.sleep(60)
 st.rerun()
