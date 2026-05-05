@@ -73,19 +73,17 @@ ist_now = get_ist()
 open_status, status_text = is_market_open()
 
 try:
-    # Fixed Indexing for Multi-index download
     indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)
     def get_index_ui(ticker, label):
-        # Extract closing prices specifically for the ticker
         close_series = indices['Close'][ticker].dropna()
+        if close_series.empty: return f"{label}: N/A"
         curr = close_series.iloc[-1]
         prev = close_series.iloc[0]
         pct = ((curr - prev) / prev) * 100
         color = "green" if pct >= 0 else "red"
         return f"{label}: **{curr:,.2f}** (:{color}[{pct:+.2f}%])"
-    
     st.markdown(f"### {get_index_ui('^NSEI', 'NIFTY 50')} | {get_index_ui('^BSESN', 'SENSEX')}")
-except Exception as e:
+except:
     st.markdown("### Indices: `Service Busy`")
 
 st.subheader(f"IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
@@ -96,9 +94,14 @@ def update_dashboard():
     results = []
     tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
-        # Increase period to 7d to ensure 20 candles are always available
+        # Fetching 7 days to ensure enough 5m candles are available
         data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
         
+        # Structure check for single vs multi-ticker
+        if len(SYMBOLS) == 1:
+            ticker_str = f"{SYMBOLS[0]}.NS"
+            data = {ticker_str: data}
+
         for symbol in SYMBOLS:
             ticker_str = f"{symbol}.NS"
             if ticker_str not in data: continue
@@ -125,15 +128,13 @@ def update_dashboard():
             roc_val = ((cmp - p5) / p5) * 100
             if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
             
-            # Indicators
+            # Additional Indicators
             if use_avg: sigs.append("↑Avg" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "↓Avg")
             if use_ema: sigs.append("↑EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA")
 
-            # Vol Surge
+            # Probability Scoring
             vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
             vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
-            
-            # Scoring
             if vol_surge: prob_score += 1
             if abs(roc_val) > 0.5: prob_score += 1
             
@@ -152,11 +153,17 @@ def update_dashboard():
                 if df['Close'].iloc[-1] > df['Open'].iloc[-1]:
                     status, t_type = "🔥 BUY", "BUY"
                     if lrc_dir == "UP": prob_score += 1
-                    st.session_state.active_trades[symbol] = {'entry': cmp, 'target': cmp*(1+target_pct), 'sl': cmp*(1-sl_pct), 'type': t_type, 'time': ist_now.strftime("%H:%M"), 'prob': prob_score}
+                    st.session_state.active_trades[symbol] = {
+                        'entry': cmp, 'target': cmp*(1+target_pct), 'sl': cmp*(1-sl_pct), 
+                        'type': t_type, 'time': ist_now.strftime("%H:%M"), 'prob': prob_score
+                    }
                 elif df['Close'].iloc[-1] < df['Open'].iloc[-1]:
                     status, t_type = "❄️ SELL", "SELL"
                     if lrc_dir == "DOWN": prob_score += 1
-                    st.session_state.active_trades[symbol] = {'entry': cmp, 'target': cmp*(1-target_pct), 'sl': cmp*(1+sl_pct), 'type': t_type, 'time': ist_now.strftime("%H:%M"), 'prob': prob_score}
+                    st.session_state.active_trades[symbol] = {
+                        'entry': cmp, 'target': cmp*(1-target_pct), 'sl': cmp*(1+sl_pct), 
+                        'type': t_type, 'time': ist_now.strftime("%H:%M"), 'prob': prob_score
+                    }
                 save_persistent_trades(st.session_state.active_trades)
 
             trade = st.session_state.active_trades.get(symbol)
@@ -176,27 +183,25 @@ def update_dashboard():
             })
         
         return pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Sort"], ascending=False).drop(columns=["InTrade", "ROC_Sort"])
-    except Exception as e:
+    except:
         return pd.DataFrame()
 
 # --- RENDER ---
-df_final = update_dashboard()
-if not df_final.empty:
+df_result = update_dashboard()
+if not df_result.empty:
     with table_placeholder.container():
         def style_rows(row):
             styles = [''] * len(row)
             if row['Status'] == "IN TRADE":
-                row_c = 'background-color: #d4edda; color: black;' if float(row['Target']) > float(row['Entry']) else 'background-color: #f8d7da; color: black;'
-                for i in range(len(row)): styles[i] = row_c
+                color = '#d4edda' if float(row['Target']) > float(row['Entry']) else '#f8d7da'
+                styles = [f'background-color: {color}; color: black;'] * len(row)
             return styles
 
-        # Apply formatting to displayable dataframe only
-        display_df = df_final.copy()
+        display_df = df_result.copy()
         for col in ["CMP", "Entry", "Target", "SL"]:
             display_df[col] = display_df[col].apply(lambda x: f"{float(x):.2f}" if float(x) != 0 else "-")
 
         st.dataframe(display_df.style.apply(style_rows, axis=1), use_container_width=True, hide_index=True)
 
-# Auto Refresh logic
 time.sleep(120 if open_status else 300)
 st.rerun()
