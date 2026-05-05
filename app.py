@@ -167,8 +167,9 @@ def get_dashboard():
                 "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
-                "Prob": p_text, "Status": status,
+                "Prob": p_text,
                 "SL": trade['sl'] if trade else 0.0,
+                "Status": status,
                 "Signal": " | ".join(sigs), "Time": e_time,
                 "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val)
             })
