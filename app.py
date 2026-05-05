@@ -118,9 +118,9 @@ def get_dashboard_data():
                 "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
-                "Prob": p_text,
                 "SL": trade['sl'] if trade else 0.0,
                 "Signal": f"LRC:{'↑' if slope > 0 else '↓'} | ROC:{roc:.2f}%",
+                "Prob": p_text,
                 "Status": status, 
                 "InTrade": 1 if trade else 0,
                 "ROC_Val": abs(roc)
