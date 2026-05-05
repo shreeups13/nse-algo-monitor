@@ -33,8 +33,7 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
-    default_stocks = 
-    ("UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP,
+    default_stocks ="UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP,
 TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL,
 ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC,
 KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON,
@@ -48,7 +47,7 @@ NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL,
 ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK,
 TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC,
 TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL,
-HFCL, PFC, BEL, PNB, CGPOWER, CUB")
+HFCL, PFC, BEL, PNB, CGPOWER, CUB"
     user_input = st.text_area("Watchlist (Comma Separated)", default_stocks)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
 
