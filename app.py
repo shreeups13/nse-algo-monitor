@@ -8,7 +8,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.0", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.1", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 
@@ -36,24 +36,24 @@ def get_ist():
 def is_market_open():
     now = get_ist()
     if now.weekday() >= 5 or now.date() in NSE_HOLIDAYS:
-        return False, "🔴 MARKET CLOSED (WEEKEND/HOLIDAY)"
+        return False, "🔴 MARKET CLOSED"
     start_time, end_time = now.replace(hour=9, minute=15, second=0), now.replace(hour=15, minute=30, second=0)
     if start_time <= now <= end_time: return True, "🟢 MARKET LIVE"
-    return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
+    return False, "🔴 MARKET CLOSED"
 
 if 'active_trades' not in st.session_state:
     st.session_state.active_trades = load_persistent_trades()
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Strategy Settings")
-    capital = st.number_input("Trading Capital (₹)", min_value=1000, value=50000, step=1000)
+    st.header("⚙️ Settings")
+    capital = st.number_input("Capital (₹)", min_value=1000, value=50000, step=1000)
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
-    st.subheader("🛠️ Technical Toggles")
-    use_ma20 = st.checkbox("Moving Average (20)", value=True)
+    st.subheader("🛠️ Indicators")
+    use_ma20 = st.checkbox("MA (20)", value=True)
     use_ema9 = st.checkbox("EMA (9)", value=True)
     use_sma50 = st.checkbox("SMA (50)", value=False)
     use_roc = st.checkbox("ROC (5)", value=True)
@@ -64,29 +64,29 @@ with st.sidebar:
     user_input = st.text_area("Watchlist", full_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
-    if st.button("🗑️ Clear Trade History"):
+    if st.button("🗑️ Reset History"):
         st.session_state.active_trades = {}
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
-# --- HEADER ---
+# --- HEADER (INDICES) ---
 ist_now = get_ist()
 open_status, status_text = is_market_open()
 
 try:
     indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)['Close']
-    n_curr, n_prev = indices["^NSEI"].iloc[-1], indices["^NSEI"].iloc[0]
-    s_curr, s_prev = indices["^BSESN"].iloc[-1], indices["^BSESN"].iloc[0]
+    n_curr, n_prev = indices["^NSEI"].dropna().iloc[-1], indices["^NSEI"].dropna().iloc[0]
+    s_curr, s_prev = indices["^BSESN"].dropna().iloc[-1], indices["^BSESN"].dropna().iloc[0]
     n_chg = ((n_curr - n_prev) / n_prev) * 100
     s_chg = ((s_curr - s_prev) / s_prev) * 100
     st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
 except:
-    st.markdown("### Indices: `Connecting to NSE...`")
+    st.markdown("### Indices: `Connecting...`")
 
-st.subheader(f"IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
+st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 table_placeholder = st.empty()
 
-# --- CORE LOGIC ---
+# --- LOGIC ---
 def get_live_dashboard():
     results = []
     tickers = [f"{s}.NS" for s in SYMBOLS]
@@ -99,39 +99,37 @@ def get_live_dashboard():
             if len(df) < 20: continue
 
             cmp = float(df['Close'].iloc[-1])
-            
-            # --- Indicators ---
             sigs = []
             prob_score = 0
             
-            # 1. ROC
+            # ROC & Volume
             p5 = df['Close'].iloc[-6]
             roc_val = ((cmp - p5) / p5) * 100
             if abs(roc_val) > 0.5: prob_score += 1
             if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
             
-            # 2. LRC
+            vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
+            vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
+            if vol_surge: prob_score += 1
+
+            # LRC Trend
             y = df['Close'].tail(14).values
             slope, _ = np.polyfit(np.arange(len(y)), y, 1)
             lrc_dir = "UP" if slope > 0 else "DOWN"
             if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
             
-            # 3. Volume Surge
-            vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
-            vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
-            if vol_surge: prob_score += 1
-
-            # 4. Moving Averages
+            # MAs
             if use_ma20: sigs.append("↑MA20" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "↓MA20")
             if use_ema9: sigs.append("↑EMA9" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA9")
             if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
 
-            # --- Trade Execution ---
             trade = st.session_state.active_trades.get(symbol)
             status = "WAITING"
+            entry_time = ist_now.strftime("%H:%M")
             
             if trade:
                 status = "IN TRADE"
+                entry_time = trade.get('time', entry_time)
                 p_text = trade.get('prob_text', "MED")
                 if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
                    (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
@@ -149,7 +147,7 @@ def get_live_dashboard():
                 
                 st.session_state.active_trades[symbol] = {
                     'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
-                    'time': ist_now.strftime("%H:%M"), 'prob_text': p_text
+                    'time': entry_time, 'prob_text': p_text
                 }
                 save_persistent_trades(st.session_state.active_trades)
             else:
@@ -159,7 +157,8 @@ def get_live_dashboard():
                 "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
-                "Prob": p_text, "SL": trade['sl'] if trade else 0.0,
+                "SL": trade['sl'] if trade else 0.0,
+                "Prob": p_text, "Time": entry_time,
                 "Signal": " | ".join(sigs), "Status": status, 
                 "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val)
             })
@@ -172,19 +171,19 @@ df_raw = get_live_dashboard()
 if not df_raw.empty:
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
-    def apply_styles(df):
-        style_df = pd.DataFrame('', index=df.index, columns=df.columns)
+    def apply_ui_styling(df):
+        styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
             if row['Status'] == "IN TRADE":
-                # Row Highlight
-                row_c = '#f0fdf4' if row['Target'] > row['Entry'] else '#fef2f2'
-                style_df.loc[i, :] = f'background-color: {row_c}; color: black'
-                # Solid CMP Cell background
+                # Code 1: Light Row Highlights
+                row_bg = '#f0fdf4' if row['Target'] > row['Entry'] else '#fef2f2'
+                styles.loc[i, :] = f'background-color: {row_bg}; color: black'
+                # Code 2: Solid CMP Background
                 cmp_bg = '#22c55e' if row['CMP'] >= row['Entry'] else '#ef4444'
-                style_df.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
-        return style_df
+                styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
+        return styles
 
-    styled_df = df_sorted.style.apply(apply_styles, axis=None).format({
+    styled_df = df_sorted.style.apply(apply_ui_styling, axis=None).format({
         "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
         "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
     })
@@ -192,8 +191,7 @@ if not df_raw.empty:
     with table_placeholder.container():
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
 else:
-    st.info("🔄 Refreshing Dashboard Data...")
+    st.info("🔄 Waiting for Market Data...")
 
-# Sleep based on market status
 time.sleep(60 if open_status else 300)
 st.rerun()
