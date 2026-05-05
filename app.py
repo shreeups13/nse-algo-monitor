@@ -33,7 +33,6 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
-    # UPDATED STOCK LIST
     full_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
     user_input = st.text_area("Watchlist", full_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
@@ -121,24 +120,23 @@ if not df_raw.empty:
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
     def apply_custom_styling(df):
-        # Default empty styles
         style_df = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
-            # 1. Row Highlighting for IN TRADE
             if row['Status'] == "IN TRADE":
-                bg_color = '#ecfdf5' if row['Target'] > row['Entry'] else '#fff1f2'
-                style_df.loc[i, :] = f'background-color: {bg_color}; color: black'
+                # Light highlight for the whole row
+                row_bg = '#f0f9ff' # Very light blue for active rows
+                style_df.loc[i, :] = f'background-color: {row_bg}; color: black'
                 
-                # 2. CMP Specific Coloring (Green if Profit, Red if Loss)
+                # SOLID BACKGROUND COLOR for CMP Cell
                 if row['Entry'] > 0:
-                    cmp_color = 'color: #059669; font-weight: bold' if row['CMP'] >= row['Entry'] else 'color: #dc2626; font-weight: bold'
-                    style_df.loc[i, 'CMP'] = f'background-color: {bg_color}; {cmp_color}'
+                    cmp_bg = '#22c55e' if row['CMP'] >= row['Entry'] else '#ef4444'
+                    style_df.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
         return style_df
 
     disp_df = df_sorted.copy()
-    # Apply format but keep numbers for the styling logic
     styled_view = disp_df.style.apply(apply_custom_styling, axis=None).format({
-        "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
+        "CMP": "{:.2f}", 
+        "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
         "Target": lambda x: f"{x:.2f}" if x > 0 else "-",
         "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
     })
