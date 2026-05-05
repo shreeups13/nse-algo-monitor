@@ -8,7 +8,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.5", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.6", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 
@@ -38,7 +38,7 @@ def is_market_open():
     if now.weekday() >= 5 or now.date() in NSE_HOLIDAYS:
         return False, "🔴 MARKET CLOSED"
     start_time, end_time = now.replace(hour=9, minute=15, second=0), now.replace(hour=15, minute=30, second=0)
-    if start_time <= now <= end_time: return True, "🟢 MARKET LIVE"
+    if start_time <= now <= end_time: return True, "🟢 MARKET OPEN"
     return False, "🔴 MARKET CLOSED"
 
 if 'active_trades' not in st.session_state:
@@ -46,30 +46,29 @@ if 'active_trades' not in st.session_state:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Settings")
-    capital = st.number_input("Capital (₹)", min_value=1000, value=50000, step=1000)
+    st.header("⚙️ Strategy Settings")
+    capital = st.number_input("Trading Capital (₹)", min_value=1000, value=50000, step=1000)
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
-    st.subheader("🛠️ Indicators")
+    st.subheader("🛠️ Technicals")
     use_ma20 = st.checkbox("MA (20)", value=True)
     use_ema9 = st.checkbox("EMA (9)", value=True)
-    use_sma50 = st.checkbox("SMA (50)", value=False)
     use_roc = st.checkbox("ROC (5)", value=True)
     use_lrc = st.checkbox("LRC Trend", value=True)
     
     st.markdown("---")
-    full_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
-    user_input = st.text_area("Watchlist", full_list)
+    stocks_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
+    user_input = st.text_area("Watchlist", stocks_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
-    if st.button("🗑️ Reset Trades"):
+    if st.button("🗑️ Reset Session"):
         st.session_state.active_trades = {}
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
-# --- HEADER ---
+# --- HEADER (INDICES) ---
 ist_now = get_ist()
 open_status, status_text = is_market_open()
 
@@ -81,49 +80,39 @@ try:
     s_chg = ((s_curr - s_prev) / s_prev) * 100
     st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
 except:
-    st.markdown("### Indices: `Refreshing...`")
+    st.markdown("### Indices: `Connecting to NSE...`")
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 table_placeholder = st.empty()
 
-# --- LOGIC ---
-def get_dashboard_data():
+# --- ENGINE ---
+def process_market_data():
     results = []
     tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
-        data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+        data = yf.download(tickers, period='5d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
         for symbol in SYMBOLS:
-            t_str = f"{symbol}.NS"
-            if t_str not in data or data[t_str].empty: continue
-            df = data[t_str].dropna()
-            if len(df) < 20: continue
+            ts = f"{symbol}.NS"
+            if ts not in data or data[ts].empty: continue
+            df = data[ts].dropna()
+            if len(df) < 15: continue
 
             cmp = float(df['Close'].iloc[-1])
             c_open = float(df['Open'].iloc[-1])
             
-            sigs = []
+            # Probability / Signal logic
             prob_score = 0
-            
-            # ROC & Volume
             p5 = df['Close'].iloc[-6]
             roc_val = ((cmp - p5) / p5) * 100
-            if abs(roc_val) > 0.5: prob_score += 1
-            if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
+            if abs(roc_val) > 0.4: prob_score += 1
             
             vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
             vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
             if vol_surge: prob_score += 1
 
-            # LRC
-            y = df['Close'].tail(14).values
+            y = df['Close'].tail(10).values
             slope, _ = np.polyfit(np.arange(len(y)), y, 1)
-            lrc_dir = "UP" if slope > 0 else "DOWN"
-            if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
-            
-            # Indicators
-            if use_ma20: sigs.append("↑MA" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "↓MA")
-            if use_ema9: sigs.append("↑EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA")
-            if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
+            lrc_up = slope > 0
 
             trade = st.session_state.active_trades.get(symbol)
             status = "WAITING"
@@ -132,75 +121,64 @@ def get_dashboard_data():
             if trade:
                 status = "IN TRADE"
                 e_time = trade.get('time', e_time)
-                p_text = trade.get('prob_text', "MED")
                 if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
                    (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
                     del st.session_state.active_trades[symbol]
                     save_persistent_trades(st.session_state.active_trades)
             elif vol_surge:
-                # OPEN-CLOSE CANDLE LOGIC
-                if cmp > c_open and lrc_dir == "UP":
+                # Candle Direction Confirmation
+                if cmp > c_open and lrc_up:
                     t_type, status = "BUY", "🔥 BUY"
-                    prob_score += 1
-                elif cmp < c_open and lrc_dir == "DOWN":
+                elif cmp < c_open and not lrc_up:
                     t_type, status = "SELL", "❄️ SELL"
-                    prob_score += 1
                 else: t_type = None
 
                 if t_type:
-                    p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
                     entry = cmp
                     target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
                     sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
-                    
-                    st.session_state.active_trades[symbol] = {
-                        'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
-                        'time': e_time, 'prob_text': p_text
-                    }
+                    st.session_state.active_trades[symbol] = {'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 'time': e_time}
                     save_persistent_trades(st.session_state.active_trades)
-            else:
-                p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
             results.append({
                 "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0,
-                "Prob": p_text, "Status": status, 
-                "Signal": " | ".join(sigs), "Time": e_time,
-                "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val)
+                "Status": status, "Time": e_time, "InTrade": 1 if trade else 0, "ROC": abs(roc_val)
             })
         return pd.DataFrame(results)
     except: return pd.DataFrame()
 
-# --- RENDER ---
-df_raw = get_dashboard_data()
+# --- STYLING & RENDER ---
+df_final = process_market_data()
 
-if not df_raw.empty:
-    df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
-    
-    def style_dataframe(df):
+if not df_final.empty:
+    df_display = df_final.sort_values(by=["InTrade", "ROC"], ascending=False).drop(columns=["InTrade", "ROC"])
+
+    def apply_custom_style(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
             if row['Status'] == "IN TRADE":
-                # Medium-Light Row Colors
-                row_bg = '#e6fffa' if row['Target'] > row['Entry'] else '#fff5f5'
-                styles.loc[i, :] = f'background-color: {row_bg}; color: #1a202c; font-weight: 500'
+                # Medium-Light Row Highlight
+                is_buy = row['Target'] > row['Entry']
+                bg_row = '#c6f6d5' if is_buy else '#fed7d7' # Light Teal vs Light Rose
+                styles.loc[i, :] = f'background-color: {bg_row}; color: black; font-weight: 500'
                 
-                # Even Medium CMP Highlights
-                cmp_bg = '#68d391' if row['CMP'] >= row['Entry'] else '#fc8181'
-                styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold; border-radius: 4px'
+                # Matching Solid CMP Highlight
+                bg_cmp = '#48bb78' if is_buy else '#f56565' # Vibrant Green vs Vibrant Red
+                styles.loc[i, 'CMP'] = f'background-color: {bg_cmp}; color: white; font-weight: bold; border: 0.5px solid #2d3748'
         return styles
 
-    formatted_df = df_sorted.style.apply(style_dataframe, axis=None).format({
+    styled_df = df_display.style.apply(apply_custom_style, axis=None).format({
         "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
         "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
     })
 
     with table_placeholder.container():
-        st.dataframe(formatted_df, use_container_width=True, hide_index=True)
+        st.dataframe(styled_df, use_container_width=True, hide_index=True)
 else:
-    st.info("🔄 Synching market data...")
+    st.info("🔄 Refreshing Dashboard Data...")
 
-time.sleep(60 if open_status else 300)
+time.sleep(120 if open_status else 300)
 st.rerun()
