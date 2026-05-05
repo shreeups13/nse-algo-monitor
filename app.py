@@ -33,9 +33,9 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
-    # UPDATED FULL STOCK LIST
-    full_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
-    user_input = st.text_area("Watchlist", full_list)
+    # ADDED FULL STOCK LIST BELOW
+    default_stocks = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
+    user_input = st.text_area("Watchlist (Comma Separated)", default_stocks)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
 
 # --- 1. FETCH INDICES ---
@@ -50,7 +50,7 @@ try:
     s_chg = ((s_curr - s_prev) / s_prev) * 100
     st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
 except:
-    st.markdown("### Indices: `Connecting...`")
+    st.markdown("### Indices: `Connecting to NSE...`")
 
 st.subheader(f"IST: {ist_now.strftime('%H:%M:%S')} | 🟢 MARKET LIVE")
 
@@ -60,6 +60,7 @@ def get_dashboard_data():
     tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
         data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+        
         for symbol in SYMBOLS:
             t_str = f"{symbol}.NS"
             if t_str not in data: continue
@@ -67,11 +68,13 @@ def get_dashboard_data():
             if len(df) < 20: continue
 
             cmp = float(df['Close'].iloc[-1])
+            
             y = df['Close'].tail(14).values
             slope, _ = np.polyfit(np.arange(len(y)), y, 1)
             lrc_dir = "UP" if slope > 0 else "DOWN"
             roc = ((cmp - df['Close'].iloc[-6]) / df['Close'].iloc[-6]) * 100
-            vol_surge = df['Volume'].iloc[-1] > (df['Volume'].rolling(10).mean().iloc[-1] * 1.2)
+            vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
+            vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
 
             prob_score = 0
             if vol_surge: prob_score += 1
@@ -107,12 +110,16 @@ def get_dashboard_data():
                 "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
-                "Prob": p_text, "SL": trade['sl'] if trade else 0.0,
+                "Prob": p_text,
+                "SL": trade['sl'] if trade else 0.0,
                 "Signal": f"LRC:{'↑' if slope > 0 else '↓'} | ROC:{roc:.2f}%",
-                "Status": status, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc)
+                "Status": status, 
+                "InTrade": 1 if trade else 0,
+                "ROC_Val": abs(roc)
             })
         return pd.DataFrame(results)
-    except: return pd.DataFrame()
+    except:
+        return pd.DataFrame()
 
 # --- 3. RENDER ---
 df_raw = get_dashboard_data()
@@ -121,11 +128,10 @@ if not df_raw.empty:
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
     def apply_cmp_background(df):
-        # Create a style dataframe with empty values
         style_df = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
             if row['Status'] == "IN TRADE" and row['Entry'] > 0:
-                # Apply solid background to CMP column only
+                # Green background if Profit (CMP >= Entry), Red if Loss (CMP < Entry)
                 bg_color = '#22c55e' if row['CMP'] >= row['Entry'] else '#ef4444'
                 style_df.loc[i, 'CMP'] = f'background-color: {bg_color}; color: white; font-weight: bold'
         return style_df
@@ -140,7 +146,7 @@ if not df_raw.empty:
 
     st.dataframe(styled_view, use_container_width=True, hide_index=True)
 else:
-    st.info("🔄 Syncing Data...")
+    st.info("🔄 Synching Data...")
 
 time.sleep(60)
 st.rerun()
