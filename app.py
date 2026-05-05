@@ -8,7 +8,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.2", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.4", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 
@@ -22,7 +22,7 @@ def load_persistent_trades():
 def save_persistent_trades(trades):
     with open(TRADES_FILE, "w") as f: json.dump(trades, f)
 
-# --- MARKET CALENDAR ---
+# --- MARKET CALENDAR 2026 ---
 NSE_HOLIDAYS = [
     date(2026, 1, 26), date(2026, 3, 3), date(2026, 3, 26), date(2026, 3, 31),
     date(2026, 4, 3), date(2026, 4, 14), date(2026, 5, 1), date(2026, 5, 28),
@@ -36,10 +36,10 @@ def get_ist():
 def is_market_open():
     now = get_ist()
     if now.weekday() >= 5 or now.date() in NSE_HOLIDAYS:
-        return False, "🔴 MARKET CLOSED"
+        return False, "🔴 MARKET CLOSED (WEEKEND/HOLIDAY)"
     start_time, end_time = now.replace(hour=9, minute=15, second=0), now.replace(hour=15, minute=30, second=0)
     if start_time <= now <= end_time: return True, "🟢 MARKET LIVE"
-    return False, "🔴 MARKET CLOSED"
+    return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
 
 if 'active_trades' not in st.session_state:
     st.session_state.active_trades = load_persistent_trades()
@@ -64,12 +64,12 @@ with st.sidebar:
     user_input = st.text_area("Watchlist", full_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
-    if st.button("🗑️ Reset Trades"):
+    if st.button("🗑️ Reset All Trades"):
         st.session_state.active_trades = {}
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
-# --- HEADER ---
+# --- HEADER (INDICES) ---
 ist_now = get_ist()
 open_status, status_text = is_market_open()
 
@@ -81,13 +81,13 @@ try:
     s_chg = ((s_curr - s_prev) / s_prev) * 100
     st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
 except:
-    st.markdown("### Indices: `Refreshing...`")
+    st.markdown("### Indices: `Connecting...`")
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 table_placeholder = st.empty()
 
 # --- LOGIC ---
-def get_live_dashboard():
+def get_dashboard():
     results = []
     tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
@@ -99,9 +99,12 @@ def get_live_dashboard():
             if len(df) < 20: continue
 
             cmp = float(df['Close'].iloc[-1])
+            c_open = float(df['Open'].iloc[-1])
+            
             sigs = []
             prob_score = 0
             
+            # Indicators
             p5 = df['Close'].iloc[-6]
             roc_val = ((cmp - p5) / p5) * 100
             if abs(roc_val) > 0.5: prob_score += 1
@@ -116,8 +119,8 @@ def get_live_dashboard():
             lrc_dir = "UP" if slope > 0 else "DOWN"
             if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
             
-            if use_ma20: sigs.append("↑MA20" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "↓MA20")
-            if use_ema9: sigs.append("↑EMA9" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA9")
+            if use_ma20: sigs.append("↑MA" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "↓MA")
+            if use_ema9: sigs.append("↑EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA")
             if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
 
             trade = st.session_state.active_trades.get(symbol)
@@ -128,25 +131,35 @@ def get_live_dashboard():
                 status = "IN TRADE"
                 e_time = trade.get('time', e_time)
                 p_text = trade.get('prob_text', "MED")
+                # Exit Logic
                 if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
                    (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
                     del st.session_state.active_trades[symbol]
                     save_persistent_trades(st.session_state.active_trades)
             elif vol_surge:
-                t_type = "BUY" if df['Close'].iloc[-1] > df['Open'].iloc[-1] else "SELL"
-                if (t_type == "BUY" and lrc_dir == "UP") or (t_type == "SELL" and lrc_dir == "DOWN"):
+                # CANDLE COLOR LOGIC (Green for Buy, Red for Sell)
+                if cmp > c_open and lrc_dir == "UP":
+                    t_type = "BUY"
+                    status = "🔥 BUY"
                     prob_score += 1
-                
-                p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
-                entry = cmp
-                target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
-                sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
-                
-                st.session_state.active_trades[symbol] = {
-                    'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
-                    'time': e_time, 'prob_text': p_text
-                }
-                save_persistent_trades(st.session_state.active_trades)
+                elif cmp < c_open and lrc_dir == "DOWN":
+                    t_type = "SELL"
+                    status = "❄️ SELL"
+                    prob_score += 1
+                else:
+                    t_type = None
+
+                if t_type:
+                    p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
+                    entry = cmp
+                    target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
+                    sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
+                    
+                    st.session_state.active_trades[symbol] = {
+                        'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
+                        'time': e_time, 'prob_text': p_text
+                    }
+                    save_persistent_trades(st.session_state.active_trades)
             else:
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
@@ -163,33 +176,32 @@ def get_live_dashboard():
     except: return pd.DataFrame()
 
 # --- RENDER ---
-df_raw = get_live_dashboard()
+df_raw = get_dashboard()
 
 if not df_raw.empty:
-    # Sorting: Active Trades on top, then by ROC
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
     def apply_styles(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
             if row['Status'] == "IN TRADE":
-                # Deeper row highlights
+                # Stronger Row Highlights (Greenish for Buy-side Profit potential, Reddish for Sell-side)
                 row_bg = '#c6f6d5' if row['Target'] > row['Entry'] else '#fed7d7'
                 styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
-                # CMP Solid but refined (white text for contrast)
+                # Solid but refined CMP alert
                 cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
-                styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold; border: 1px solid black'
+                styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
         return styles
 
-    styled_df = df_sorted.style.apply(apply_styles, axis=None).format({
+    styled_view = df_sorted.style.apply(apply_styles, axis=None).format({
         "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
         "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
     })
 
     with table_placeholder.container():
-        st.dataframe(styled_df, use_container_width=True, hide_index=True)
+        st.dataframe(styled_view, use_container_width=True, hide_index=True)
 else:
-    st.info("🔄 Refreshing watchlist...")
+    st.info("🔄 Processing candle data...")
 
 time.sleep(60 if open_status else 300)
 st.rerun()
