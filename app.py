@@ -8,7 +8,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.1", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.2", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 
@@ -64,12 +64,12 @@ with st.sidebar:
     user_input = st.text_area("Watchlist", full_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
-    if st.button("🗑️ Reset History"):
+    if st.button("🗑️ Reset Trades"):
         st.session_state.active_trades = {}
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
-# --- HEADER (INDICES) ---
+# --- HEADER ---
 ist_now = get_ist()
 open_status, status_text = is_market_open()
 
@@ -81,7 +81,7 @@ try:
     s_chg = ((s_curr - s_prev) / s_prev) * 100
     st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
 except:
-    st.markdown("### Indices: `Connecting...`")
+    st.markdown("### Indices: `Refreshing...`")
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 table_placeholder = st.empty()
@@ -102,7 +102,6 @@ def get_live_dashboard():
             sigs = []
             prob_score = 0
             
-            # ROC & Volume
             p5 = df['Close'].iloc[-6]
             roc_val = ((cmp - p5) / p5) * 100
             if abs(roc_val) > 0.5: prob_score += 1
@@ -112,24 +111,22 @@ def get_live_dashboard():
             vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
             if vol_surge: prob_score += 1
 
-            # LRC Trend
             y = df['Close'].tail(14).values
             slope, _ = np.polyfit(np.arange(len(y)), y, 1)
             lrc_dir = "UP" if slope > 0 else "DOWN"
             if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
             
-            # MAs
             if use_ma20: sigs.append("↑MA20" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "↓MA20")
             if use_ema9: sigs.append("↑EMA9" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA9")
             if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
 
             trade = st.session_state.active_trades.get(symbol)
             status = "WAITING"
-            entry_time = ist_now.strftime("%H:%M")
+            e_time = ist_now.strftime("%H:%M")
             
             if trade:
                 status = "IN TRADE"
-                entry_time = trade.get('time', entry_time)
+                e_time = trade.get('time', e_time)
                 p_text = trade.get('prob_text', "MED")
                 if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
                    (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
@@ -147,7 +144,7 @@ def get_live_dashboard():
                 
                 st.session_state.active_trades[symbol] = {
                     'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
-                    'time': entry_time, 'prob_text': p_text
+                    'time': e_time, 'prob_text': p_text
                 }
                 save_persistent_trades(st.session_state.active_trades)
             else:
@@ -158,8 +155,8 @@ def get_live_dashboard():
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0,
-                "Prob": p_text, "Time": entry_time,
-                "Signal": " | ".join(sigs), "Status": status, 
+                "Prob": p_text, "Status": status, 
+                "Signal": " | ".join(sigs), "Time": e_time,
                 "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val)
             })
         return pd.DataFrame(results)
@@ -169,21 +166,22 @@ def get_live_dashboard():
 df_raw = get_live_dashboard()
 
 if not df_raw.empty:
+    # Sorting: Active Trades on top, then by ROC
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
-    def apply_ui_styling(df):
+    def apply_styles(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
             if row['Status'] == "IN TRADE":
-                # Code 1: Light Row Highlights
-                row_bg = '#f0fdf4' if row['Target'] > row['Entry'] else '#fef2f2'
-                styles.loc[i, :] = f'background-color: {row_bg}; color: black'
-                # Code 2: Solid CMP Background
-                cmp_bg = '#22c55e' if row['CMP'] >= row['Entry'] else '#ef4444'
-                styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
+                # Deeper row highlights
+                row_bg = '#c6f6d5' if row['Target'] > row['Entry'] else '#fed7d7'
+                styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
+                # CMP Solid but refined (white text for contrast)
+                cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
+                styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold; border: 1px solid black'
         return styles
 
-    styled_df = df_sorted.style.apply(apply_ui_styling, axis=None).format({
+    styled_df = df_sorted.style.apply(apply_styles, axis=None).format({
         "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
         "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
     })
@@ -191,7 +189,7 @@ if not df_raw.empty:
     with table_placeholder.container():
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
 else:
-    st.info("🔄 Waiting for Market Data...")
+    st.info("🔄 Refreshing watchlist...")
 
 time.sleep(60 if open_status else 300)
 st.rerun()
