@@ -33,6 +33,7 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
+    # UPDATED FULL STOCK LIST
     full_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
     user_input = st.text_area("Watchlist", full_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
@@ -119,22 +120,18 @@ df_raw = get_dashboard_data()
 if not df_raw.empty:
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
-    def apply_custom_styling(df):
+    def apply_cmp_background(df):
+        # Create a style dataframe with empty values
         style_df = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
-            if row['Status'] == "IN TRADE":
-                # Light highlight for the whole row
-                row_bg = '#f0f9ff' # Very light blue for active rows
-                style_df.loc[i, :] = f'background-color: {row_bg}; color: black'
-                
-                # SOLID BACKGROUND COLOR for CMP Cell
-                if row['Entry'] > 0:
-                    cmp_bg = '#22c55e' if row['CMP'] >= row['Entry'] else '#ef4444'
-                    style_df.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
+            if row['Status'] == "IN TRADE" and row['Entry'] > 0:
+                # Apply solid background to CMP column only
+                bg_color = '#22c55e' if row['CMP'] >= row['Entry'] else '#ef4444'
+                style_df.loc[i, 'CMP'] = f'background-color: {bg_color}; color: white; font-weight: bold'
         return style_df
 
     disp_df = df_sorted.copy()
-    styled_view = disp_df.style.apply(apply_custom_styling, axis=None).format({
+    styled_view = disp_df.style.apply(apply_cmp_background, axis=None).format({
         "CMP": "{:.2f}", 
         "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
         "Target": lambda x: f"{x:.2f}" if x > 0 else "-",
