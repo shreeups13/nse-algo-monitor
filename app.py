@@ -8,7 +8,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.4", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.5", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 
@@ -22,7 +22,7 @@ def load_persistent_trades():
 def save_persistent_trades(trades):
     with open(TRADES_FILE, "w") as f: json.dump(trades, f)
 
-# --- MARKET CALENDAR 2026 ---
+# --- NSE HOLIDAYS 2026 ---
 NSE_HOLIDAYS = [
     date(2026, 1, 26), date(2026, 3, 3), date(2026, 3, 26), date(2026, 3, 31),
     date(2026, 4, 3), date(2026, 4, 14), date(2026, 5, 1), date(2026, 5, 28),
@@ -36,10 +36,10 @@ def get_ist():
 def is_market_open():
     now = get_ist()
     if now.weekday() >= 5 or now.date() in NSE_HOLIDAYS:
-        return False, "🔴 MARKET CLOSED (WEEKEND/HOLIDAY)"
+        return False, "🔴 MARKET CLOSED"
     start_time, end_time = now.replace(hour=9, minute=15, second=0), now.replace(hour=15, minute=30, second=0)
     if start_time <= now <= end_time: return True, "🟢 MARKET LIVE"
-    return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
+    return False, "🔴 MARKET CLOSED"
 
 if 'active_trades' not in st.session_state:
     st.session_state.active_trades = load_persistent_trades()
@@ -64,12 +64,12 @@ with st.sidebar:
     user_input = st.text_area("Watchlist", full_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
-    if st.button("🗑️ Reset All Trades"):
+    if st.button("🗑️ Reset Trades"):
         st.session_state.active_trades = {}
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
-# --- HEADER (INDICES) ---
+# --- HEADER ---
 ist_now = get_ist()
 open_status, status_text = is_market_open()
 
@@ -81,13 +81,13 @@ try:
     s_chg = ((s_curr - s_prev) / s_prev) * 100
     st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
 except:
-    st.markdown("### Indices: `Connecting...`")
+    st.markdown("### Indices: `Refreshing...`")
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 table_placeholder = st.empty()
 
 # --- LOGIC ---
-def get_dashboard():
+def get_dashboard_data():
     results = []
     tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
@@ -104,7 +104,7 @@ def get_dashboard():
             sigs = []
             prob_score = 0
             
-            # Indicators
+            # ROC & Volume
             p5 = df['Close'].iloc[-6]
             roc_val = ((cmp - p5) / p5) * 100
             if abs(roc_val) > 0.5: prob_score += 1
@@ -114,11 +114,13 @@ def get_dashboard():
             vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
             if vol_surge: prob_score += 1
 
+            # LRC
             y = df['Close'].tail(14).values
             slope, _ = np.polyfit(np.arange(len(y)), y, 1)
             lrc_dir = "UP" if slope > 0 else "DOWN"
             if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
             
+            # Indicators
             if use_ma20: sigs.append("↑MA" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "↓MA")
             if use_ema9: sigs.append("↑EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA")
             if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
@@ -131,23 +133,19 @@ def get_dashboard():
                 status = "IN TRADE"
                 e_time = trade.get('time', e_time)
                 p_text = trade.get('prob_text', "MED")
-                # Exit Logic
                 if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
                    (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
                     del st.session_state.active_trades[symbol]
                     save_persistent_trades(st.session_state.active_trades)
             elif vol_surge:
-                # CANDLE COLOR LOGIC (Green for Buy, Red for Sell)
+                # OPEN-CLOSE CANDLE LOGIC
                 if cmp > c_open and lrc_dir == "UP":
-                    t_type = "BUY"
-                    status = "🔥 BUY"
+                    t_type, status = "BUY", "🔥 BUY"
                     prob_score += 1
                 elif cmp < c_open and lrc_dir == "DOWN":
-                    t_type = "SELL"
-                    status = "❄️ SELL"
+                    t_type, status = "SELL", "❄️ SELL"
                     prob_score += 1
-                else:
-                    t_type = None
+                else: t_type = None
 
                 if t_type:
                     p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
@@ -176,32 +174,33 @@ def get_dashboard():
     except: return pd.DataFrame()
 
 # --- RENDER ---
-df_raw = get_dashboard()
+df_raw = get_dashboard_data()
 
 if not df_raw.empty:
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
-    def apply_styles(df):
+    def style_dataframe(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
             if row['Status'] == "IN TRADE":
-                # Stronger Row Highlights (Greenish for Buy-side Profit potential, Reddish for Sell-side)
-                row_bg = '#c6f6d5' if row['Target'] > row['Entry'] else '#fed7d7'
-                styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
-                # Solid but refined CMP alert
-                cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
-                styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
+                # Medium-Light Row Colors
+                row_bg = '#e6fffa' if row['Target'] > row['Entry'] else '#fff5f5'
+                styles.loc[i, :] = f'background-color: {row_bg}; color: #1a202c; font-weight: 500'
+                
+                # Even Medium CMP Highlights
+                cmp_bg = '#68d391' if row['CMP'] >= row['Entry'] else '#fc8181'
+                styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold; border-radius: 4px'
         return styles
 
-    styled_view = df_sorted.style.apply(apply_styles, axis=None).format({
+    formatted_df = df_sorted.style.apply(style_dataframe, axis=None).format({
         "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
         "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
     })
 
     with table_placeholder.container():
-        st.dataframe(styled_view, use_container_width=True, hide_index=True)
+        st.dataframe(formatted_df, use_container_width=True, hide_index=True)
 else:
-    st.info("🔄 Processing candle data...")
+    st.info("🔄 Synching market data...")
 
 time.sleep(60 if open_status else 300)
 st.rerun()
