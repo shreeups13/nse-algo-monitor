@@ -8,9 +8,9 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v5.0", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v5.1", layout="wide", page_icon="📈")
 
-TRADES_FILE = "trade_history_v5.json"
+TRADES_FILE = "trade_history_v51.json"
 
 def load_trades():
     if os.path.exists(TRADES_FILE):
@@ -35,11 +35,9 @@ def get_ist():
 
 def is_market_open():
     now = get_ist()
-    if now.weekday() >= 5 or now.date() in NSE_HOLIDAYS:
-        return False, "🔴 MARKET CLOSED"
-    if now.hour < 9 or (now.hour == 9 and now.minute < 15) or now.hour >= 15:
-        return False, "🔴 MARKET CLOSED"
-    return True, "🟢 MARKET LIVE"
+    if now.weekday() >= 5 or now.date() in NSE_HOLIDAYS: return False
+    if now.hour < 9 or (now.hour == 9 and now.minute < 15) or now.hour >= 15: return False
+    return True
 
 if 'active_trades' not in st.session_state:
     st.session_state.active_trades = load_trades()
@@ -56,33 +54,35 @@ with st.sidebar:
     user_input = st.text_area("Watchlist", full_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
-    if st.button("🗑️ Clear All Trades"):
+    if st.button("🗑️ Reset Positions"):
         st.session_state.active_trades = {}
         save_trades({})
         st.rerun()
 
-# --- DATA ENGINE ---
-def get_live_data():
-    results = []
+# --- FRAGMENTED DATA ENGINE ---
+# This part updates every 60s without rerunning the WHOLE script thread
+@st.fragment(run_every=60)
+def show_live_dashboard():
+    ist_now = get_ist()
+    m_open = is_market_open()
+    st.write(f"🕰️ **IST:** {ist_now.strftime('%H:%M:%S')} | {'🟢 LIVE' if m_open else '🔴 CLOSED'}")
+    
     tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
-        # threads=False is MANDATORY here to fix your error
-        data = yf.download(tickers, period='5d', interval='5m', group_by='ticker', auto_adjust=True, progress=False, threads=False)
+        # threads=False is key for OS resource management
+        data = yf.download(tickers, period='2d', interval='5m', group_by='ticker', auto_adjust=True, progress=False, threads=False)
         
+        results = []
         for symbol in SYMBOLS:
             tk = f"{symbol}.NS"
             if tk not in data or data[tk].empty: continue
             df = data[tk].dropna()
-            if len(df) < 15: continue
+            if len(df) < 10: continue
 
             cmp = float(df['Close'].iloc[-1])
             c_open = float(df['Open'].iloc[-1])
-            
-            # Trend Logic
             y = df['Close'].tail(10).values
             slope, _ = np.polyfit(np.arange(len(y)), y, 1)
-            
-            # Volume Logic
             vol_surge = df['Volume'].iloc[-1] > (df['Volume'].rolling(10).mean().iloc[-1] * 1.2)
 
             trade = st.session_state.active_trades.get(symbol)
@@ -95,7 +95,6 @@ def get_live_data():
                     del st.session_state.active_trades[symbol]
                     save_trades(st.session_state.active_trades)
             elif vol_surge:
-                # Candle Color Check
                 if cmp > c_open and slope > 0:
                     t_type, status = "BUY", "🔥 BUY"
                 elif cmp < c_open and slope < 0:
@@ -106,55 +105,36 @@ def get_live_data():
                     entry = cmp
                     target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
                     sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
-                    st.session_state.active_trades[symbol] = {
-                        'entry': entry, 'target': target, 'sl': sl, 
-                        'type': t_type, 'time': get_ist().strftime("%H:%M")
-                    }
+                    st.session_state.active_trades[symbol] = {'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 'time': ist_now.strftime("%H:%M")}
                     save_trades(st.session_state.active_trades)
 
             results.append({
-                "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
-                "Entry": trade['entry'] if trade else 0.0,
-                "Target": trade['target'] if trade else 0.0,
-                "SL": trade['sl'] if trade else 0.0,
-                "Status": status, "InTrade": 1 if trade else 0,
-                "ROC": abs(((cmp - df['Close'].iloc[-5])/df['Close'].iloc[-5])*100)
+                "Stock": symbol, "CMP": cmp, "Entry": trade['entry'] if trade else 0.0,
+                "Target": trade['target'] if trade else 0.0, "SL": trade['sl'] if trade else 0.0,
+                "Status": status, "InTrade": 1 if trade else 0, "ROC": abs(((cmp - df['Close'].iloc[-5])/df['Close'].iloc[-5])*100)
             })
-        return pd.DataFrame(results)
-    except: return pd.DataFrame()
+        
+        if results:
+            df_final = pd.DataFrame(results).sort_values(by=["InTrade", "ROC"], ascending=False).drop(columns=["InTrade", "ROC"])
+            
+            def apply_style(df):
+                styles = pd.DataFrame('', index=df.index, columns=df.columns)
+                for i, row in df.iterrows():
+                    if row['Status'] == "IN TRADE":
+                        is_buy = row['Target'] > row['Entry']
+                        row_color = '#e6fffa' if is_buy else '#fff5f5'
+                        styles.loc[i, :] = f'background-color: {row_color}; color: black'
+                        cmp_color = '#68d391' if is_buy else '#fc8181'
+                        styles.loc[i, 'CMP'] = f'background-color: {cmp_color}; color: white; font-weight: bold'
+                return styles
 
-# --- RENDER ---
-ist_now = get_ist()
-open_status, status_txt = is_market_open()
+            st.dataframe(df_final.style.apply(apply_style, axis=None).format({"CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}", "SL": "{:.2f}"}), use_container_width=True, hide_index=True)
+        else:
+            st.info("Searching for signals...")
+    except Exception as e:
+        st.error(f"Waiting for fresh data... ({e})")
 
-st.markdown(f"### 🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_txt}")
-table_placeholder = st.empty()
-
-df_raw = get_live_data()
-
-if not df_raw.empty:
-    df_final = df_raw.sort_values(by=["InTrade", "ROC"], ascending=False).drop(columns=["InTrade", "ROC"])
-
-    def apply_style(df):
-        styles = pd.DataFrame('', index=df.index, columns=df.columns)
-        for i, row in df.iterrows():
-            if row['Status'] == "IN TRADE":
-                is_buy = row['Target'] > row['Entry']
-                # Row Highlight (Pastel)
-                row_color = '#e6fffa' if is_buy else '#fff5f5'
-                styles.loc[i, :] = f'background-color: {row_color}; color: black'
-                # Solid CMP Cell Highlight
-                cmp_color = '#68d391' if is_buy else '#fc8181'
-                styles.loc[i, 'CMP'] = f'background-color: {cmp_color}; color: white; font-weight: bold'
-        return styles
-
-    st_df = df_final.style.apply(apply_style, axis=None).format({
-        "CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}", "SL": "{:.2f}"
-    })
-    
-    with table_placeholder.container():
-        st.dataframe(st_df, use_container_width=True, hide_index=True)
-
-# Safety Sleep to avoid thread crashing
-time.sleep(120 if open_status else 300)
-st.rerun()
+# --- MAIN APP EXECUTION ---
+# This part only runs ONCE. The fragment above handles the looping.
+st.title("📈 Pro Trader Dashboard")
+show_live_dashboard()
