@@ -1,4 +1,4 @@
-#G2.06.05.26
+#G3.25.05.2026
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -52,6 +52,11 @@ with st.sidebar:
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
+    # 1) Dynamic ROC Filtering System
+    st.markdown("---")
+    st.subheader("🎯 ROC Filtering")
+    roc_filter_val = st.slider("Hide stocks with ROC between (±%)", 0.0, 5.0, 2.0, step=0.1)
+    
     st.markdown("---")
     st.subheader("🛠️ Indicators")
     use_ma20 = st.checkbox("MA (20)", value=True)
@@ -75,7 +80,8 @@ ist_now = get_ist()
 open_status, status_text = is_market_open()
 
 try:
-    indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)['Close']
+    # Appending threads=False to avoid threading issues on background system lookups
+    indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False, threads=False)['Close']
     n_curr, n_prev = indices["^NSEI"].dropna().iloc[-1], indices["^NSEI"].dropna().iloc[0]
     s_curr, s_prev = indices["^BSESN"].dropna().iloc[-1], indices["^BSESN"].dropna().iloc[0]
     n_chg = ((n_curr - n_prev) / n_prev) * 100
@@ -92,7 +98,8 @@ def get_dashboard():
     results = []
     tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
-        data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+        # CRITICAL FIX: threads=False drops thread creation entirely to stop "RuntimeError: can't start new thread"
+        data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False, threads=False)
         for symbol in SYMBOLS:
             t_str = f"{symbol}.NS"
             if t_str not in data or data[t_str].empty: continue
@@ -156,19 +163,25 @@ def get_dashboard():
                     target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
                     sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
                     
+                    # 2) Save current execution ROC snapshot permanently inside state file
                     st.session_state.active_trades[symbol] = {
                         'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
-                        'time': e_time, 'prob_text': p_text
+                        'time': e_time, 'prob_text': p_text, 'entry_roc': roc_val
                     }
                     save_persistent_trades(st.session_state.active_trades)
             else:
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
+
+            # Check dynamic bounds constraint (Only filter out if it's NOT an active execution)
+            if not trade and (-roc_filter_val <= roc_val <= roc_filter_val):
+                continue
 
             results.append({
                 "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0,
+                "Entry_ROC": trade['entry_roc'] if trade and 'entry_roc' in trade else 0.0, # Tracking Column
                 "Prob": p_text, "Status": status, 
                 "Signal": " | ".join(sigs), "Time": e_time,
                 "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val)
@@ -196,7 +209,8 @@ if not df_raw.empty:
 
     styled_view = df_sorted.style.apply(apply_styles, axis=None).format({
         "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
-        "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
+        "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-",
+        "Entry_ROC": lambda x: f"{x:+.2f}%" if x != 0 else "-"
     })
 
     with table_placeholder.container():
