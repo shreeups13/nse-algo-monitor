@@ -1,4 +1,3 @@
-#G3.25.05.2026
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +8,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.4", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.5", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 
@@ -52,10 +51,10 @@ with st.sidebar:
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
-    # 1) Dynamic ROC Filtering System
+    # Updated text and behavior: Focuses on higher momentum values
     st.markdown("---")
     st.subheader("🎯 ROC Filtering")
-    roc_filter_val = st.slider("Hide stocks with ROC between (±%)", 0.0, 5.0, 2.0, step=0.1)
+    roc_threshold = st.slider("Show stocks with ROC greater/less than (±%)", 0.0, 5.0, 2.0, step=0.1)
     
     st.markdown("---")
     st.subheader("🛠️ Indicators")
@@ -80,7 +79,6 @@ ist_now = get_ist()
 open_status, status_text = is_market_open()
 
 try:
-    # Appending threads=False to avoid threading issues on background system lookups
     indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False, threads=False)['Close']
     n_curr, n_prev = indices["^NSEI"].dropna().iloc[-1], indices["^NSEI"].dropna().iloc[0]
     s_curr, s_prev = indices["^BSESN"].dropna().iloc[-1], indices["^BSESN"].dropna().iloc[0]
@@ -98,7 +96,6 @@ def get_dashboard():
     results = []
     tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
-        # CRITICAL FIX: threads=False drops thread creation entirely to stop "RuntimeError: can't start new thread"
         data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False, threads=False)
         for symbol in SYMBOLS:
             t_str = f"{symbol}.NS"
@@ -163,7 +160,6 @@ def get_dashboard():
                     target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
                     sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
                     
-                    # 2) Save current execution ROC snapshot permanently inside state file
                     st.session_state.active_trades[symbol] = {
                         'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
                         'time': e_time, 'prob_text': p_text, 'entry_roc': roc_val
@@ -172,8 +168,9 @@ def get_dashboard():
             else:
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
-            # Check dynamic bounds constraint (Only filter out if it's NOT an active execution)
-            if not trade and (-roc_filter_val <= roc_val <= roc_filter_val):
+            # FILTER LOGIC: Keep row ONLY if absolute ROC value is greater than or equal to threshold
+            # Active trades bypass this rule so you never lose track of open metrics.
+            if not trade and (abs(roc_val) < roc_threshold):
                 continue
 
             results.append({
@@ -181,7 +178,7 @@ def get_dashboard():
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0,
-                "Entry_ROC": trade['entry_roc'] if trade and 'entry_roc' in trade else 0.0, # Tracking Column
+                "Entry_ROC": trade['entry_roc'] if trade and 'entry_roc' in trade else 0.0,
                 "Prob": p_text, "Status": status, 
                 "Signal": " | ".join(sigs), "Time": e_time,
                 "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val)
@@ -199,10 +196,8 @@ if not df_raw.empty:
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
             if row['Status'] == "IN TRADE":
-                # Stronger Row Highlights (Greenish for Buy-side Profit potential, Reddish for Sell-side)
                 row_bg = '#c6f6d5' if row['Target'] > row['Entry'] else '#fed7d7'
                 styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
-                # Solid but refined CMP alert
                 cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
                 styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
         return styles
@@ -216,7 +211,7 @@ if not df_raw.empty:
     with table_placeholder.container():
         st.dataframe(styled_view, use_container_width=True, hide_index=True)
 else:
-    st.info("🔄 Processing candle data...")
+    st.info("🔄 Filtering asset list for matching criteria...")
 
 time.sleep(60 if open_status else 300)
 st.rerun()
