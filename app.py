@@ -1,5 +1,4 @@
-#beta
-#G3.25.05.26
+#G2.06.05.26
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -10,20 +9,19 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v5.1", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.4", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
-COOLDOWN_FILE = "trade_cooldown_final.json"
 
-def load_json_file(filename):
-    if os.path.exists(filename):
+def load_persistent_trades():
+    if os.path.exists(TRADES_FILE):
         try:
-            with open(filename, "r") as f: return json.load(f)
+            with open(TRADES_FILE, "r") as f: return json.load(f)
         except: return {}
     return {}
 
-def save_json_file(data, filename):
-    with open(filename, "w") as f: json.dump(data, f)
+def save_persistent_trades(trades):
+    with open(TRADES_FILE, "w") as f: json.dump(trades, f)
 
 # --- MARKET CALENDAR 2026 ---
 NSE_HOLIDAYS = [
@@ -39,34 +37,20 @@ def get_ist():
 def is_market_open():
     now = get_ist()
     if now.weekday() >= 5 or now.date() in NSE_HOLIDAYS:
-        return False, "🔴 MARKET CLOSED (WEEKEND/HOLIDAY)", False
+        return False, "🔴 MARKET CLOSED (WEEKEND/HOLIDAY)"
     start_time, end_time = now.replace(hour=9, minute=15, second=0), now.replace(hour=15, minute=30, second=0)
-    lockout_time = now.replace(hour=9, minute=30, second=0)
-    
-    if start_time <= now <= end_time:
-        if now < lockout_time:
-            return True, "⚠️ LOCKOUT PERIOD (NO NEW TRADES UNTIL 9:30 AM)", False
-        return True, "🟢 MARKET LIVE", True
-    return False, "🔴 MARKET CLOSED (OUT OF HOURS)", False
+    if start_time <= now <= end_time: return True, "🟢 MARKET LIVE"
+    return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
 
 if 'active_trades' not in st.session_state:
-    st.session_state.active_trades = load_json_file(TRADES_FILE)
-if 'cooldown_trades' not in st.session_state:
-    st.session_state.cooldown_trades = load_json_file(COOLDOWN_FILE)
+    st.session_state.active_trades = load_persistent_trades()
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Settings")
     capital = st.number_input("Capital (₹)", min_value=1000, value=50000, step=1000)
-    risk_pct = st.slider("Account Risk per Trade (%)", 0.25, 2.0, 1.0, step=0.25) / 100
-    target_pct = st.slider("Target (%)", 0.5, 5.0, 1.5, step=0.1) / 100
-    sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5, step=0.1) / 100
-    
-    st.markdown("---")
-    st.subheader("⚡ Momentum & Beta Filters")
-    roc_threshold = st.slider("Show stocks with ROC greater/less than (±%)", 0.0, 5.0, 2.0, step=0.1)
-    # NEW: Beta asset allocation threshold slider
-    min_beta = st.slider("Minimum Allowed Asset Beta (Market Volatility)", 0.5, 2.5, 1.0, step=0.1, help="Filters out slow, sideways dragging assets. Index baseline benchmark is 1.0.")
+    target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
+    sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
     st.subheader("🛠️ Indicators")
@@ -81,24 +65,17 @@ with st.sidebar:
     user_input = st.text_area("Watchlist", full_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
-    if st.button("🗑️ Reset All Trades & Logs"):
+    if st.button("🗑️ Reset All Trades"):
         st.session_state.active_trades = {}
-        st.session_state.cooldown_trades = {}
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
-        if os.path.exists(COOLDOWN_FILE): os.remove(COOLDOWN_FILE)
         st.rerun()
 
 # --- HEADER (INDICES) ---
 ist_now = get_ist()
-open_status, status_text, entry_allowed = is_market_open()
-
-today_str = ist_now.strftime("%Y-%m-%d")
-if any(v.get('date') != today_str for v in st.session_state.cooldown_trades.values()):
-    st.session_state.cooldown_trades = {}
-    save_json_file({}, COOLDOWN_FILE)
+open_status, status_text = is_market_open()
 
 try:
-    indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False, threads=False)['Close']
+    indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)['Close']
     n_curr, n_prev = indices["^NSEI"].dropna().iloc[-1], indices["^NSEI"].dropna().iloc[0]
     s_curr, s_prev = indices["^BSESN"].dropna().iloc[-1], indices["^BSESN"].dropna().iloc[0]
     n_chg = ((n_curr - n_prev) / n_prev) * 100
@@ -113,16 +90,9 @@ table_placeholder = st.empty()
 # --- LOGIC ---
 def get_dashboard():
     results = []
-    # Include NIFTY 50 benchmark matrix in the ticker processing list for true calculation
-    tickers = [f"{s}.NS" for s in SYMBOLS] + ["^NSEI"]
+    tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
-        data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False, threads=False)
-        
-        # Isolate Nifty baseline series for calculating statistical Covariance
-        if "^NSEI" not in data or data["^NSEI"].empty: return pd.DataFrame()
-        nifty_pct = data["^NSEI"]['Close'].dropna().pct_change().dropna()
-        nifty_var = nifty_pct.var()
-        
+        data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
         for symbol in SYMBOLS:
             t_str = f"{symbol}.NS"
             if t_str not in data or data[t_str].empty: continue
@@ -132,22 +102,6 @@ def get_dashboard():
             cmp = float(df['Close'].iloc[-1])
             c_open = float(df['Open'].iloc[-1])
             
-            # STATISTICAL BETA ENGINE: Measure systematic asset returns against market returns
-            trade = st.session_state.active_trades.get(symbol)
-            try:
-                stock_pct = df['Close'].pct_change().dropna()
-                # Align data lengths using inner merge
-                aligned_df = pd.concat([stock_pct, nifty_pct], axis=1, join='inner')
-                covariance = aligned_df.iloc[:, 0].cov(aligned_df.iloc[:, 1])
-                asset_beta = round(covariance / nifty_var, 2) if nifty_var != 0 else 1.0
-            except:
-                asset_beta = 1.0
-
-            # CRITICAL ENFORCEMENT: Eliminate stock if Beta falls below user momentum parameters
-            # Active positions skip this check so you don't drop tracking an asset mid-position
-            if not trade and asset_beta < min_beta:
-                continue
-
             sigs = []
             prob_score = 0
             
@@ -170,32 +124,21 @@ def get_dashboard():
             if use_ema9: sigs.append("↑EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA")
             if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
 
+            trade = st.session_state.active_trades.get(symbol)
             status = "WAITING"
             e_time = ist_now.strftime("%H:%M")
-            calc_qty = 0
             
             if trade:
                 status = "IN TRADE"
                 e_time = trade.get('time', e_time)
                 p_text = trade.get('prob_text', "MED")
-                calc_qty = trade.get('qty', int((capital * risk_pct) // (cmp * sl_pct)))
-                
+                # Exit Logic
                 if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
                    (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
-                    
-                    st.session_state.cooldown_trades[symbol] = {'date': today_str, 'exit_time': e_time}
-                    save_json_file(st.session_state.cooldown_trades, COOLDOWN_FILE)
-                    
                     del st.session_state.active_trades[symbol]
-                    save_json_file(st.session_state.active_trades, TRADES_FILE)
-                    trade = None
-                    status = "COOLDOWN"
-            
-            elif st.session_state.cooldown_trades.get(symbol):
-                status = "COOLDOWN"
-                p_text = "OFF"
-            
-            elif vol_surge and entry_allowed:
+                    save_persistent_trades(st.session_state.active_trades)
+            elif vol_surge:
+                # CANDLE COLOR LOGIC (Green for Buy, Red for Sell)
                 if cmp > c_open and lrc_dir == "UP":
                     t_type = "BUY"
                     status = "🔥 BUY"
@@ -213,42 +156,25 @@ def get_dashboard():
                     target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
                     sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
                     
-                    risk_amount = capital * risk_pct
-                    sl_distance = abs(entry - sl)
-                    calc_qty = int(risk_amount // sl_distance) if sl_distance > 0 else 0
-                    
-                    if calc_qty > 0:
-                        st.session_state.active_trades[symbol] = {
-                            'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
-                            'time': e_time, 'prob_text': p_text, 'entry_roc': roc_val, 'qty': calc_qty
-                        }
-                        save_json_file(st.session_state.active_trades, TRADES_FILE)
-                        trade = st.session_state.active_trades[symbol]
+                    st.session_state.active_trades[symbol] = {
+                        'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
+                        'time': e_time, 'prob_text': p_text
+                    }
+                    save_persistent_trades(st.session_state.active_trades)
             else:
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
-            if not trade and status != "COOLDOWN" and (abs(roc_val) < roc_threshold):
-                continue
-
-            if not trade:
-                risk_amount = capital * risk_pct
-                sl_distance = cmp * sl_pct
-                calc_qty = int(risk_amount // sl_distance) if sl_distance > 0 else 0
-
             results.append({
-                "Stock": symbol, "Beta": asset_beta, "Qty": calc_qty, "CMP": cmp,
+                "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0,
-                "Entry_ROC": trade['entry_roc'] if trade and 'entry_roc' in trade else 0.0,
                 "Prob": p_text, "Status": status, 
                 "Signal": " | ".join(sigs), "Time": e_time,
-                "InTrade": 2 if status == "IN TRADE" else 1 if status == "COOLDOWN" else 0, 
-                "ROC_Val": abs(roc_val)
+                "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val)
             })
         return pd.DataFrame(results)
-    except Exception as e:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 # --- RENDER ---
 df_raw = get_dashboard()
@@ -260,24 +186,23 @@ if not df_raw.empty:
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
             if row['Status'] == "IN TRADE":
+                # Stronger Row Highlights (Greenish for Buy-side Profit potential, Reddish for Sell-side)
                 row_bg = '#c6f6d5' if row['Target'] > row['Entry'] else '#fed7d7'
                 styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
+                # Solid but refined CMP alert
                 cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
                 styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
-            elif row['Status'] == "COOLDOWN":
-                styles.loc[i, :] = 'background-color: #edf2f7; color: #a0aec0; text-decoration: line-through;'
         return styles
 
     styled_view = df_sorted.style.apply(apply_styles, axis=None).format({
-        "Beta": "{:.2f}", "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
-        "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-",
-        "Entry_ROC": lambda x: f"{x:+.2f}%" if x != 0 else "-"
+        "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
+        "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
     })
 
     with table_placeholder.container():
         st.dataframe(styled_view, use_container_width=True, hide_index=True)
 else:
-    st.info("🔄 Filtering asset list for high-beta volatility models...")
+    st.info("🔄 Processing candle data...")
 
 time.sleep(60 if open_status else 300)
 st.rerun()
