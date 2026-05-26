@@ -1,4 +1,5 @@
-#G4.25.05.26
+#beta
+#G3.25.05.26
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +10,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v5.0", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v5.1", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 COOLDOWN_FILE = "trade_cooldown_final.json"
@@ -62,8 +63,10 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5, step=0.1) / 100
     
     st.markdown("---")
-    st.subheader("🎯 ROC Filtering")
+    st.subheader("⚡ Momentum & Beta Filters")
     roc_threshold = st.slider("Show stocks with ROC greater/less than (±%)", 0.0, 5.0, 2.0, step=0.1)
+    # NEW: Beta asset allocation threshold slider
+    min_beta = st.slider("Minimum Allowed Asset Beta (Market Volatility)", 0.5, 2.5, 1.0, step=0.1, help="Filters out slow, sideways dragging assets. Index baseline benchmark is 1.0.")
     
     st.markdown("---")
     st.subheader("🛠️ Indicators")
@@ -89,7 +92,6 @@ with st.sidebar:
 ist_now = get_ist()
 open_status, status_text, entry_allowed = is_market_open()
 
-# Clean up stale cooldown records if a new trading day begins
 today_str = ist_now.strftime("%Y-%m-%d")
 if any(v.get('date') != today_str for v in st.session_state.cooldown_trades.values()):
     st.session_state.cooldown_trades = {}
@@ -111,9 +113,16 @@ table_placeholder = st.empty()
 # --- LOGIC ---
 def get_dashboard():
     results = []
-    tickers = [f"{s}.NS" for s in SYMBOLS]
+    # Include NIFTY 50 benchmark matrix in the ticker processing list for true calculation
+    tickers = [f"{s}.NS" for s in SYMBOLS] + ["^NSEI"]
     try:
         data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False, threads=False)
+        
+        # Isolate Nifty baseline series for calculating statistical Covariance
+        if "^NSEI" not in data or data["^NSEI"].empty: return pd.DataFrame()
+        nifty_pct = data["^NSEI"]['Close'].dropna().pct_change().dropna()
+        nifty_var = nifty_pct.var()
+        
         for symbol in SYMBOLS:
             t_str = f"{symbol}.NS"
             if t_str not in data or data[t_str].empty: continue
@@ -123,6 +132,22 @@ def get_dashboard():
             cmp = float(df['Close'].iloc[-1])
             c_open = float(df['Open'].iloc[-1])
             
+            # STATISTICAL BETA ENGINE: Measure systematic asset returns against market returns
+            trade = st.session_state.active_trades.get(symbol)
+            try:
+                stock_pct = df['Close'].pct_change().dropna()
+                # Align data lengths using inner merge
+                aligned_df = pd.concat([stock_pct, nifty_pct], axis=1, join='inner')
+                covariance = aligned_df.iloc[:, 0].cov(aligned_df.iloc[:, 1])
+                asset_beta = round(covariance / nifty_var, 2) if nifty_var != 0 else 1.0
+            except:
+                asset_beta = 1.0
+
+            # CRITICAL ENFORCEMENT: Eliminate stock if Beta falls below user momentum parameters
+            # Active positions skip this check so you don't drop tracking an asset mid-position
+            if not trade and asset_beta < min_beta:
+                continue
+
             sigs = []
             prob_score = 0
             
@@ -145,8 +170,6 @@ def get_dashboard():
             if use_ema9: sigs.append("↑EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA")
             if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
 
-            trade = st.session_state.active_trades.get(symbol)
-            cooldown = st.session_state.cooldown_trades.get(symbol)
             status = "WAITING"
             e_time = ist_now.strftime("%H:%M")
             calc_qty = 0
@@ -157,11 +180,9 @@ def get_dashboard():
                 p_text = trade.get('prob_text', "MED")
                 calc_qty = trade.get('qty', int((capital * risk_pct) // (cmp * sl_pct)))
                 
-                # Exit Logic Execution
                 if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
                    (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
                     
-                    # Log to Cooldown map to bar structural re-entry today
                     st.session_state.cooldown_trades[symbol] = {'date': today_str, 'exit_time': e_time}
                     save_json_file(st.session_state.cooldown_trades, COOLDOWN_FILE)
                     
@@ -170,11 +191,11 @@ def get_dashboard():
                     trade = None
                     status = "COOLDOWN"
             
-            elif cooldown:
+            elif st.session_state.cooldown_trades.get(symbol):
                 status = "COOLDOWN"
                 p_text = "OFF"
             
-            elif vol_surge and entry_allowed: # Strict Time Block Enforcement
+            elif vol_surge and entry_allowed:
                 if cmp > c_open and lrc_dir == "UP":
                     t_type = "BUY"
                     status = "🔥 BUY"
@@ -192,7 +213,6 @@ def get_dashboard():
                     target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
                     sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
                     
-                    # Mathematical Risk Sizing: Qty = (Capital * Risk%) / (Distance to SL)
                     risk_amount = capital * risk_pct
                     sl_distance = abs(entry - sl)
                     calc_qty = int(risk_amount // sl_distance) if sl_distance > 0 else 0
@@ -207,18 +227,16 @@ def get_dashboard():
             else:
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
-            # Dynamic Filter Rule: Hide passive stocks that lack explicit ROC validation
             if not trade and status != "COOLDOWN" and (abs(roc_val) < roc_threshold):
                 continue
 
-            # Base Quantity Display for non-active positions
             if not trade:
                 risk_amount = capital * risk_pct
                 sl_distance = cmp * sl_pct
                 calc_qty = int(risk_amount // sl_distance) if sl_distance > 0 else 0
 
             results.append({
-                "Stock": symbol, "Qty": calc_qty, "CMP": cmp,
+                "Stock": symbol, "Beta": asset_beta, "Qty": calc_qty, "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0,
@@ -251,7 +269,7 @@ if not df_raw.empty:
         return styles
 
     styled_view = df_sorted.style.apply(apply_styles, axis=None).format({
-        "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
+        "Beta": "{:.2f}", "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
         "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-",
         "Entry_ROC": lambda x: f"{x:+.2f}%" if x != 0 else "-"
     })
@@ -259,7 +277,7 @@ if not df_raw.empty:
     with table_placeholder.container():
         st.dataframe(styled_view, use_container_width=True, hide_index=True)
 else:
-    st.info("🔄 Filtering asset list for matching criteria...")
+    st.info("🔄 Filtering asset list for high-beta volatility models...")
 
 time.sleep(60 if open_status else 300)
 st.rerun()
