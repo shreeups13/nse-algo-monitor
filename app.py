@@ -9,7 +9,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.6", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.7", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 
@@ -56,8 +56,9 @@ with st.sidebar:
     st.subheader("🎯 Custom Filters")
     filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.00, step=0.01, format="%.2f")
     filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.00, step=0.01, format="%.2f")
-    # Updated Selectbox options as requested: All, S.Buy Only, S.Sell Only, Blank Only
-    filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "Blank Only"])
+    
+    # Added "S.Buy & S.Sell" combined option to the filter list below
+    filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
     
     st.markdown("---")
     st.subheader("🛠️ Indicators")
@@ -181,18 +182,19 @@ def get_dashboard():
             else:
                 trade_cond = "-"
 
-            # --- STRICT ROC & SIGNAL CONDITION FILTERS ---
-            # If ROC is positive, it must be >= filter_roc_gt
+            # --- STRICT ROC FILTERS ---
             if roc_val >= 0 and roc_val < filter_roc_gt:
                 continue
-            # If ROC is negative, its drop magnitude must be >= filter_roc_lt (e.g. less than -1.00%)
             if roc_val < 0 and roc_val > -filter_roc_lt:
                 continue
 
-            # Strict verification of user dropdown trade type criteria matches
+            # --- TRADE TYPE SELECTION FILTER ---
             if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy":
                 continue
             if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell":
+                continue
+            # Combined condition: keeps a row if it matches either S.Buy or S.Sell
+            if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]:
                 continue
             if filter_trade_type == "Blank Only" and trade_cond != "-":
                 continue
@@ -221,7 +223,7 @@ df_raw = get_dashboard()
 if not df_raw.empty:
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
-    # Exact structure layout requirement lock
+    # Exact structural column layout order
     target_order = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
     df_sorted = df_sorted[target_order]
     
