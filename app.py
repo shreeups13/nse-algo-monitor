@@ -9,7 +9,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.5", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.6", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 
@@ -54,10 +54,10 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("🎯 Custom Filters")
-    # Switched to inputs for unlimited scale boundaries
-    filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=0.01, step=0.01, format="%.2f")
-    filter_roc_lt = st.number_input("ROC Less Than (<) %", value=50.0, step=0.01, format="%.2f")
-    filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only"])
+    filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.00, step=0.01, format="%.2f")
+    filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.00, step=0.01, format="%.2f")
+    # Updated Selectbox options as requested: All, S.Buy Only, S.Sell Only, Blank Only
+    filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "Blank Only"])
     
     st.markdown("---")
     st.subheader("🛠️ Indicators")
@@ -181,20 +181,22 @@ def get_dashboard():
             else:
                 trade_cond = "-"
 
-            # --- STRICT SIDEBAR FILTER EXECUTION ---
-            if not trade:
-                # Value scale filtration limits (looking at absolute value score)
-                if abs(roc_val) < filter_roc_gt:
-                    continue
-                if abs(roc_val) > filter_roc_lt:
-                    continue
-                # Explicit condition string verification matches
-                if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy":
-                    continue
-                if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell":
-                    continue
+            # --- STRICT ROC & SIGNAL CONDITION FILTERS ---
+            # If ROC is positive, it must be >= filter_roc_gt
+            if roc_val >= 0 and roc_val < filter_roc_gt:
+                continue
+            # If ROC is negative, its drop magnitude must be >= filter_roc_lt (e.g. less than -1.00%)
+            if roc_val < 0 and roc_val > -filter_roc_lt:
+                continue
 
-            # Appended dictionary with your exact required column alignment structure
+            # Strict verification of user dropdown trade type criteria matches
+            if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy":
+                continue
+            if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell":
+                continue
+            if filter_trade_type == "Blank Only" and trade_cond != "-":
+                continue
+
             results.append({
                 "Stock": symbol, 
                 "Trade": trade_cond,
@@ -217,10 +219,9 @@ def get_dashboard():
 df_raw = get_dashboard()
 
 if not df_raw.empty:
-    # Internal alignment sorting
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
-    # Exact structure order lock
+    # Exact structure layout requirement lock
     target_order = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
     df_sorted = df_sorted[target_order]
     
