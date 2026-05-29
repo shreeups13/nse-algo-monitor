@@ -1,4 +1,4 @@
-#G2.06.05.26
+#G2.29.05.26
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -120,8 +120,12 @@ def get_dashboard():
             lrc_dir = "UP" if slope > 0 else "DOWN"
             if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
             
-            if use_ma20: sigs.append("↑MA" if cmp > df['Close'].rolling(20).mean().iloc[-1] else "↓MA")
-            if use_ema9: sigs.append("↑EMA" if cmp > df['Close'].ewm(span=9).mean().iloc[-1] else "↓EMA")
+            ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
+            if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
+            
+            ema_up = cmp > df['Close'].ewm(span=9).mean().iloc[-1]
+            if use_ema9: sigs.append("↑EMA" if ema_up else "↓EMA")
+            
             if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
 
             trade = st.session_state.active_trades.get(symbol)
@@ -164,12 +168,20 @@ def get_dashboard():
             else:
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
+            # Compute "Trade" condition column string value
+            if p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up:
+                trade_cond = "S.Buy"
+            elif p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up:
+                trade_cond = "S.Sell"
+            else:
+                trade_cond = "-"
+
             results.append({
                 "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
                 "Target": trade['target'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0,
-                "Prob": p_text, "Status": status, 
+                "Prob": p_text, "Trade": trade_cond, "Status": status, 
                 "Signal": " | ".join(sigs), "Time": e_time,
                 "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val)
             })
@@ -186,10 +198,8 @@ if not df_raw.empty:
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
             if row['Status'] == "IN TRADE":
-                # Stronger Row Highlights (Greenish for Buy-side Profit potential, Reddish for Sell-side)
                 row_bg = '#c6f6d5' if row['Target'] > row['Entry'] else '#fed7d7'
                 styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
-                # Solid but refined CMP alert
                 cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
                 styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
         return styles
