@@ -220,37 +220,25 @@ df_raw = get_dashboard()
 if not df_raw.empty:
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
-    # Structural column layout configuration
+    # Exact structural column layout order
     target_order = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
     df_sorted = df_sorted[target_order]
     
     def apply_styles(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
-            # Clear distinct tracking values
-            if row['Trade'] == "S.Buy":
-                row_bg = '#d4edda'  # Vibrant Clear Light Green
-            elif row['Trade'] == "S.Sell":
-                row_bg = '#f8d7da'  # Vibrant Clear Light Red
-            elif row['Status'] == "IN TRADE" and row['Target'] > row['Entry']:
-                row_bg = '#c6f6d5'  # Active Trade Long Green
-            elif row['Status'] == "IN TRADE" and row['Target'] < row['Entry']:
-                row_bg = '#fed7d7'  # Active Trade Short Red
-            else:
-                row_bg = ''
-
-            # Inject row color base styles across the dataframe matrix row
-            if row_bg != '':
-                styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500;'
+            # Apply Light Blue color across all non-blank situations (S.Buy, S.Sell, or active IN TRADE statuses)
+            if row['Trade'] in ["S.Buy", "S.Sell"] or row['Status'] == "IN TRADE":
+                styles.loc[i, :] = 'background-color: #e6f4ea; color: black;' # Unified clean light-blue tint
                 
-            # Keep CMP column clear of the regular row color base layout
-            styles.loc[i, 'CMP'] = ''
-            
-            # High-intensity distinct execution colors strictly applied only for active market signals
-            if row['Status'] == "IN TRADE":
-                cmp_bg = '#1a8a44' if row['Target'] > row['Entry'] else '#c53030'
-                styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold;'
+                # Strip row coloring background mix off the CMP column cell
+                styles.loc[i, 'CMP'] = ''
                 
+                # Active trade scenario marker logic override for CMP column cell
+                if row['Status'] == "IN TRADE":
+                    styles.loc[i, :] = 'background-color: #e6f4ea; color: black; font-weight: 500'
+                    cmp_bg = '#1a8a44' if row['Target'] > row['Entry'] else '#c53030'
+                    styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
         return styles
 
     styled_view = df_sorted.style.apply(apply_styles, axis=None).format({
