@@ -1,4 +1,4 @@
-#G2.29.05.26
+#G3.29.05.26
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -51,6 +51,13 @@ with st.sidebar:
     capital = st.number_input("Capital (₹)", min_value=1000, value=50000, step=1000)
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
+    
+    st.markdown("---")
+    st.subheader("🎯 Custom Filters")
+    # New sidebar inputs for filters
+    filter_roc_gt = st.slider("ROC Greater Than (>) %", -5.0, 5.0, -5.0, step=0.1)
+    filter_roc_lt = st.slider("ROC Less Than (<) %", -5.0, 5.0, 5.0, step=0.1)
+    filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only"])
     
     st.markdown("---")
     st.subheader("🛠️ Indicators")
@@ -175,6 +182,20 @@ def get_dashboard():
                 trade_cond = "S.Sell"
             else:
                 trade_cond = "-"
+
+            # --- APPLIED FILTERS (Bypassed if stock is actively in an open trade) ---
+            if not trade:
+                # 1) ROC Greater than filter
+                if roc_val < filter_roc_gt:
+                    continue
+                # 2) ROC Less than filter
+                if roc_val > filter_roc_lt:
+                    continue
+                # 3) Trade condition filter choice
+                if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy":
+                    continue
+                if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell":
+                    continue
 
             results.append({
                 "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
