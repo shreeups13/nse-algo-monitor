@@ -9,7 +9,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.4", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.5", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 
@@ -54,9 +54,9 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("🎯 Custom Filters")
-    # New sidebar inputs for filters
-    filter_roc_gt = st.slider("ROC Greater Than (>) %", -5.0, 5.0, -5.0, step=0.1)
-    filter_roc_lt = st.slider("ROC Less Than (<) %", -5.0, 5.0, 5.0, step=0.1)
+    # Switched to inputs for unlimited scale boundaries
+    filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=0.01, step=0.01, format="%.2f")
+    filter_roc_lt = st.number_input("ROC Less Than (<) %", value=50.0, step=0.01, format="%.2f")
     filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only"])
     
     st.markdown("---")
@@ -143,13 +143,11 @@ def get_dashboard():
                 status = "IN TRADE"
                 e_time = trade.get('time', e_time)
                 p_text = trade.get('prob_text', "MED")
-                # Exit Logic
                 if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
                    (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
                     del st.session_state.active_trades[symbol]
                     save_persistent_trades(st.session_state.active_trades)
             elif vol_surge:
-                # CANDLE COLOR LOGIC (Green for Buy, Red for Sell)
                 if cmp > c_open and lrc_dir == "UP":
                     t_type = "BUY"
                     status = "🔥 BUY"
@@ -175,7 +173,7 @@ def get_dashboard():
             else:
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
-            # Compute "Trade" condition column string value
+            # Compute "Trade" conditions
             if p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up:
                 trade_cond = "S.Buy"
             elif p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up:
@@ -183,28 +181,34 @@ def get_dashboard():
             else:
                 trade_cond = "-"
 
-            # --- APPLIED FILTERS (Bypassed if stock is actively in an open trade) ---
+            # --- STRICT SIDEBAR FILTER EXECUTION ---
             if not trade:
-                # 1) ROC Greater than filter
-                if roc_val < filter_roc_gt:
+                # Value scale filtration limits (looking at absolute value score)
+                if abs(roc_val) < filter_roc_gt:
                     continue
-                # 2) ROC Less than filter
-                if roc_val > filter_roc_lt:
+                if abs(roc_val) > filter_roc_lt:
                     continue
-                # 3) Trade condition filter choice
+                # Explicit condition string verification matches
                 if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy":
                     continue
                 if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell":
                     continue
 
+            # Appended dictionary with your exact required column alignment structure
             results.append({
-                "Stock": symbol, "Qty": int(capital // cmp), "CMP": cmp,
+                "Stock": symbol, 
+                "Trade": trade_cond,
+                "Qty": int(capital // cmp), 
+                "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
-                "Target": trade['target'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0,
-                "Prob": p_text, "Trade": trade_cond, "Status": status, 
-                "Signal": " | ".join(sigs), "Time": e_time,
-                "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val)
+                "Target": trade['target'] if trade else 0.0,
+                "Signal": " | ".join(sigs), 
+                "Status": status, 
+                "Prob": p_text, 
+                "Time": e_time,
+                "InTrade": 1 if trade else 0, 
+                "ROC_Val": abs(roc_val)
             })
         return pd.DataFrame(results)
     except: return pd.DataFrame()
@@ -213,7 +217,12 @@ def get_dashboard():
 df_raw = get_dashboard()
 
 if not df_raw.empty:
+    # Internal alignment sorting
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
+    
+    # Exact structure order lock
+    target_order = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
+    df_sorted = df_sorted[target_order]
     
     def apply_styles(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
@@ -233,7 +242,7 @@ if not df_raw.empty:
     with table_placeholder.container():
         st.dataframe(styled_view, use_container_width=True, hide_index=True)
 else:
-    st.info("🔄 Processing candle data...")
+    st.info("🔄 Processing candle data matching filter parameters...")
 
 time.sleep(60 if open_status else 300)
 st.rerun()
