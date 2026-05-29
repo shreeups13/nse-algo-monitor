@@ -1,4 +1,4 @@
-#G3.29.05.26
+#G4.29.05.26
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +9,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.7", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.8", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 
@@ -56,8 +56,6 @@ with st.sidebar:
     st.subheader("🎯 Custom Filters")
     filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.00, step=0.01, format="%.2f")
     filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.00, step=0.01, format="%.2f")
-    
-    # Added "S.Buy & S.Sell" combined option to the filter list below
     filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
     
     st.markdown("---")
@@ -193,7 +191,6 @@ def get_dashboard():
                 continue
             if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell":
                 continue
-            # Combined condition: keeps a row if it matches either S.Buy or S.Sell
             if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]:
                 continue
             if filter_trade_type == "Blank Only" and trade_cond != "-":
@@ -230,11 +227,27 @@ if not df_raw.empty:
     def apply_styles(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
+            # Base logic row coloring if it is actively IN TRADE
             if row['Status'] == "IN TRADE":
                 row_bg = '#c6f6d5' if row['Target'] > row['Entry'] else '#fed7d7'
+                # Fill all columns with base color
                 styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
+                # Overlay distinct bright solid indicator directly on CMP cell
                 cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
                 styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
+            
+            # Non-active rows: Color based on "Trade" condition status (EXCEPT CMP Column)
+            else:
+                if row['Trade'] == "S.Buy":
+                    # Color all columns light green
+                    styles.loc[i, :] = 'background-color: #e6fffa; color: black;'
+                    # Reset CMP cell back to standard formatting style
+                    styles.loc[i, 'CMP'] = ''
+                elif row['Trade'] == "S.Sell":
+                    # Color all columns light red
+                    styles.loc[i, :] = 'background-color: #fff5f5; color: black;'
+                    # Reset CMP cell back to standard formatting style
+                    styles.loc[i, 'CMP'] = ''
         return styles
 
     styled_view = df_sorted.style.apply(apply_styles, axis=None).format({
