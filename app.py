@@ -1,4 +1,4 @@
-#G4.29.05.26
+#G6.02.06.26
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, date
 import time
 import json
 import os
-import random  # Added for relative market depth generation
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="NSE Pro Monitor v4.7", layout="wide", page_icon="📈")
@@ -49,7 +48,7 @@ if 'active_trades' not in st.session_state:
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Settings")
-    capital = st.number_input("Capital (₹)", min_value=1000, value=50000, step=1000)
+    capital = st.number_input("Capital (₹)", min_value=1000, value=5000, step=1000)
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
@@ -113,21 +112,18 @@ def get_dashboard():
             sigs = []
             prob_score = 0
             
-            # --- RELATIVE MARKET DEPTH GENERATION (OBI Math) ---
-            # Simulates Order Book layers relatively tied to the current trend velocity
-            total_bid_qty = random.randint(5000, 75000)
-            total_ask_qty = random.randint(5000, 75000)
-            total_pool = total_bid_qty + total_ask_qty
-            obi_val = (total_bid_qty - total_ask_qty) / total_pool if total_pool > 0 else 0.0
-            
             # Indicators
             p5 = df['Close'].iloc[-6]
             roc_val = ((cmp - p5) / p5) * 100
             if abs(roc_val) > 0.5: prob_score += 1
             if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
             
-            # Appending OBI directly to the Relative Signal column string outputs
-            sigs.append(f"OBI:{obi_val:+.2f}")
+            # --- EVALUATE FLAG COLOR ---
+            # Blue if absolute ROC is between 1% and 5%, Red otherwise
+            if 1.0 <= abs(roc_val) <= 5.0:
+                flag = "🔵 "
+            else:
+                flag = "🔴 "
             
             vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
             vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
@@ -209,7 +205,7 @@ def get_dashboard():
                 continue
 
             results.append({
-                "Stock": symbol, 
+                "Stock": flag + symbol, # Flag added directly in front of the name
                 "Trade": trade_cond,
                 "Qty": int(capital // cmp), 
                 "CMP": cmp,
@@ -235,7 +231,6 @@ if not df_raw.empty:
     target_order = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
     df_sorted = df_sorted[target_order]
     
-    # Original color background function untouched 
     def apply_styles(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
