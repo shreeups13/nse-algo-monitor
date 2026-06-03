@@ -1,4 +1,4 @@
-#G6.02.06.26
+#G7.03.06.26
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -119,7 +119,6 @@ def get_dashboard():
             if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
             
             # --- EVALUATE FLAG COLOR ---
-            # Blue if absolute ROC is between 1% and 5%, Red otherwise
             if 1.0 <= abs(roc_val) <= 5.0:
                 flag = "🔵 "
             else:
@@ -130,9 +129,21 @@ def get_dashboard():
             if vol_surge: prob_score += 1
 
             y = df['Close'].tail(14).values
-            slope, _ = np.polyfit(np.arange(len(y)), y, 1)
+            x = np.arange(len(y))
+            slope, intercept = np.polyfit(x, y, 1)
             lrc_dir = "UP" if slope > 0 else "DOWN"
             if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
+            
+            # --- LRC 2 AND AVERAGE PRICE CALCULATION FOR UNDERLINE ---
+            avg_price = np.mean(y)
+            lrc2 = (slope * (len(y) - 1)) + intercept  # End value of the trend fit line
+            
+            if lrc2 > avg_price:
+                underline_color = "#1a8a44" # Green underline
+            else:
+                underline_color = "#c53030" # Red underline
+                
+            display_stock_name = f"{flag}<span style='text-decoration: underline; text-decoration-color: {underline_color}; text-decoration-thickness: 2px;'>**{symbol}**</span>"
             
             ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
             if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
@@ -205,7 +216,7 @@ def get_dashboard():
                 continue
 
             results.append({
-                "Stock": flag + symbol, # Flag added directly in front of the name
+                "Stock": display_stock_name, 
                 "Trade": trade_cond,
                 "Qty": int(capital // cmp), 
                 "CMP": cmp,
@@ -247,6 +258,7 @@ if not df_raw.empty:
     })
 
     with table_placeholder.container():
+        # Streamlit requires custom HTML columns to be rendered explicitly via safe_html configuration
         st.dataframe(styled_view, use_container_width=True, hide_index=True)
 else:
     st.info("🔄 Processing candle data matching filter parameters...")
