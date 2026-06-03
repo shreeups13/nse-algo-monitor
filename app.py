@@ -95,8 +95,17 @@ except:
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 table_placeholder = st.empty()
 
-# --- OPTIMIZED INDIVIDUAL SYMBOL THREAD PROCESSING ---
-def process_symbol(symbol, data):
+# --- CACHED BULK DATA HANDSHAKE ---
+# ttl=60 keeps data stored in memory for 60 seconds. Filter adjustments will instantly load without downloading.
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_bulk_market_data(tickers):
+    try:
+        return yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+    except:
+        return pd.DataFrame()
+
+# --- INDIVIDUAL SYMBOL THREAD PROCESSING ---
+def process_symbol(symbol, data, target_pct, sl_pct, filter_roc_gt, filter_roc_lt, filter_trade_type, use_roc, use_lrc, use_ma20, use_ema9, use_sma50, capital):
     t_str = f"{symbol}.NS"
     if t_str not in data or data[t_str].empty: 
         return None
@@ -154,7 +163,7 @@ def process_symbol(symbol, data):
 
     trade = st.session_state.active_trades.get(symbol)
     status = "WAITING"
-    e_time = ist_now.strftime("%H:%M")
+    e_time = datetime.now().strftime("%H:%M") # Safe decoupling for pure static thread execution
     
     if trade:
         status = "IN TRADE"
@@ -233,13 +242,21 @@ def process_symbol(symbol, data):
 # --- LOGIC ---
 def get_dashboard():
     tickers = [f"{s}.NS" for s in SYMBOLS]
-    try:
-        # Download all data in one single bulk download request
-        data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+    # Fetch using the newly optimized and cached function
+    data = fetch_bulk_market_data(tickers)
+    
+    if data.empty:
+        return pd.DataFrame()
         
-        # Parallelize row processing across virtual CPU threads to eliminate compute latency
+    try:
         with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(process_symbol, symbol, data) for symbol in SYMBOLS]
+            futures = [
+                executor.submit(
+                    process_symbol, symbol, data, target_pct, sl_pct, 
+                    filter_roc_gt, filter_roc_lt, filter_trade_type, 
+                    use_roc, use_lrc, use_ma20, use_ema9, use_sma50, capital
+                ) for symbol in SYMBOLS
+            ]
             results = [f.result() for f in futures if f.result() is not None]
             
         return pd.DataFrame(results)
