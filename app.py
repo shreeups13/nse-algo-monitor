@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, date
 import time
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="NSE Pro Monitor v4.7", layout="wide", page_icon="📈")
@@ -94,144 +95,156 @@ except:
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 table_placeholder = st.empty()
 
+# --- OPTIMIZED INDIVIDUAL SYMBOL THREAD PROCESSING ---
+def process_symbol(symbol, data):
+    t_str = f"{symbol}.NS"
+    if t_str not in data or data[t_str].empty: 
+        return None
+        
+    df = data[t_str].dropna()
+    if len(df) < 20: 
+        return None
+
+    cmp = float(df['Close'].iloc[-1])
+    c_open = float(df['Open'].iloc[-1])
+    
+    sigs = []
+    prob_score = 0
+    
+    # Indicators
+    p5 = df['Close'].iloc[-6]
+    roc_val = ((cmp - p5) / p5) * 100
+    if abs(roc_val) > 0.5: prob_score += 1
+    if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
+    
+    # --- EVALUATE FLAG COLOR ---
+    if 1.0 <= abs(roc_val) <= 5.0:
+        flag = "🔵 "
+    else:
+        flag = "🔴 "
+    
+    vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
+    vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
+    if vol_surge: prob_score += 1
+
+    y = df['Close'].tail(14).values
+    x = np.arange(len(y))
+    slope, intercept = np.polyfit(x, y, 1)
+    lrc_dir = "UP" if slope > 0 else "DOWN"
+    if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
+    
+    # --- LRC 2 AND AVERAGE PRICE CALCULATION FOR UNDERLINE ---
+    avg_price = np.mean(y)
+    lrc2 = (slope * (len(y) - 1)) + intercept
+    
+    if lrc2 > avg_price:
+        underline_color = "#1a8a44"
+    else:
+        underline_color = "#c53030"
+        
+    display_stock_name = f"{flag}<span style='text-decoration: underline; text-decoration-color: {underline_color}; text-decoration-thickness: 2px;'>**{symbol}**</span>"
+    
+    ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
+    if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
+    
+    ema_up = cmp > df['Close'].ewm(span=9).mean().iloc[-1]
+    if use_ema9: sigs.append("↑EMA" if ema_up else "↓EMA")
+    
+    if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
+
+    trade = st.session_state.active_trades.get(symbol)
+    status = "WAITING"
+    e_time = ist_now.strftime("%H:%M")
+    
+    if trade:
+        status = "IN TRADE"
+        e_time = trade.get('time', e_time)
+        p_text = trade.get('prob_text', "MED")
+        if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
+           (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
+            del st.session_state.active_trades[symbol]
+            save_persistent_trades(st.session_state.active_trades)
+    elif vol_surge:
+        if cmp > c_open and lrc_dir == "UP":
+            t_type = "BUY"
+            status = "🔥 BUY"
+            prob_score += 1
+        elif cmp < c_open and lrc_dir == "DOWN":
+            t_type = "SELL"
+            status = "❄️ SELL"
+            prob_score += 1
+        else:
+            t_type = None
+
+        if t_type:
+            p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
+            entry = cmp
+            target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
+            sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
+            
+            st.session_state.active_trades[symbol] = {
+                'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
+                'time': e_time, 'prob_text': p_text
+            }
+            save_persistent_trades(st.session_state.active_trades)
+    else:
+        p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
+
+    # Compute "Trade" conditions
+    if p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up:
+        trade_cond = "S.Buy"
+    elif p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up:
+        trade_cond = "S.Sell"
+    else:
+        trade_cond = "-"
+
+    # --- STRICT ROC FILTERS ---
+    if roc_val >= 0 and roc_val < filter_roc_gt:
+        return None
+    if roc_val < 0 and roc_val > -filter_roc_lt:
+        return None
+
+    # --- TRADE TYPE SELECTION FILTER ---
+    if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy":
+        return None
+    if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell":
+        return None
+    if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]:
+        return None
+    if filter_trade_type == "Blank Only" and trade_cond != "-":
+        return None
+
+    return {
+        "Stock": display_stock_name, 
+        "Trade": trade_cond,
+        "Qty": int(capital // cmp), 
+        "CMP": cmp,
+        "Entry": trade['entry'] if trade else 0.0,
+        "SL": trade['sl'] if trade else 0.0,
+        "Target": trade['target'] if trade else 0.0,
+        "Signal": " | ".join(sigs), 
+        "Status": status, 
+        "Prob": p_text, 
+        "Time": e_time,
+        "InTrade": 1 if trade else 0, 
+        "ROC_Val": abs(roc_val)
+    }
+
 # --- LOGIC ---
 def get_dashboard():
-    results = []
     tickers = [f"{s}.NS" for s in SYMBOLS]
     try:
+        # Download all data in one single bulk download request
         data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
-        for symbol in SYMBOLS:
-            t_str = f"{symbol}.NS"
-            if t_str not in data or data[t_str].empty: continue
-            df = data[t_str].dropna()
-            if len(df) < 20: continue
-
-            cmp = float(df['Close'].iloc[-1])
-            c_open = float(df['Open'].iloc[-1])
+        
+        # Parallelize row processing across virtual CPU threads to eliminate compute latency
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(process_symbol, symbol, data) for symbol in SYMBOLS]
+            results = [f.result() for f in futures if f.result() is not None]
             
-            sigs = []
-            prob_score = 0
-            
-            # Indicators
-            p5 = df['Close'].iloc[-6]
-            roc_val = ((cmp - p5) / p5) * 100
-            if abs(roc_val) > 0.5: prob_score += 1
-            if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
-            
-            # --- EVALUATE FLAG COLOR ---
-            if 1.0 <= abs(roc_val) <= 5.0:
-                flag = "🔵 "
-            else:
-                flag = "🔴 "
-            
-            vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
-            vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
-            if vol_surge: prob_score += 1
-
-            y = df['Close'].tail(14).values
-            x = np.arange(len(y))
-            slope, intercept = np.polyfit(x, y, 1)
-            lrc_dir = "UP" if slope > 0 else "DOWN"
-            if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
-            
-            # --- LRC 2 AND AVERAGE PRICE CALCULATION FOR UNDERLINE ---
-            avg_price = np.mean(y)
-            lrc2 = (slope * (len(y) - 1)) + intercept  # End value of the trend fit line
-            
-            if lrc2 > avg_price:
-                underline_color = "#1a8a44" # Green underline
-            else:
-                underline_color = "#c53030" # Red underline
-                
-            display_stock_name = f"{flag}<span style='text-decoration: underline; text-decoration-color: {underline_color}; text-decoration-thickness: 2px;'>**{symbol}**</span>"
-            
-            ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
-            if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
-            
-            ema_up = cmp > df['Close'].ewm(span=9).mean().iloc[-1]
-            if use_ema9: sigs.append("↑EMA" if ema_up else "↓EMA")
-            
-            if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
-
-            trade = st.session_state.active_trades.get(symbol)
-            status = "WAITING"
-            e_time = ist_now.strftime("%H:%M")
-            
-            if trade:
-                status = "IN TRADE"
-                e_time = trade.get('time', e_time)
-                p_text = trade.get('prob_text', "MED")
-                if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
-                   (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
-                    del st.session_state.active_trades[symbol]
-                    save_persistent_trades(st.session_state.active_trades)
-            elif vol_surge:
-                if cmp > c_open and lrc_dir == "UP":
-                    t_type = "BUY"
-                    status = "🔥 BUY"
-                    prob_score += 1
-                elif cmp < c_open and lrc_dir == "DOWN":
-                    t_type = "SELL"
-                    status = "❄️ SELL"
-                    prob_score += 1
-                else:
-                    t_type = None
-
-                if t_type:
-                    p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
-                    entry = cmp
-                    target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
-                    sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
-                    
-                    st.session_state.active_trades[symbol] = {
-                        'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
-                        'time': e_time, 'prob_text': p_text
-                    }
-                    save_persistent_trades(st.session_state.active_trades)
-            else:
-                p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
-
-            # Compute "Trade" conditions
-            if p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up:
-                trade_cond = "S.Buy"
-            elif p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up:
-                trade_cond = "S.Sell"
-            else:
-                trade_cond = "-"
-
-            # --- STRICT ROC FILTERS ---
-            if roc_val >= 0 and roc_val < filter_roc_gt:
-                continue
-            if roc_val < 0 and roc_val > -filter_roc_lt:
-                continue
-
-            # --- TRADE TYPE SELECTION FILTER ---
-            if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy":
-                continue
-            if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell":
-                continue
-            if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]:
-                continue
-            if filter_trade_type == "Blank Only" and trade_cond != "-":
-                continue
-
-            results.append({
-                "Stock": display_stock_name, 
-                "Trade": trade_cond,
-                "Qty": int(capital // cmp), 
-                "CMP": cmp,
-                "Entry": trade['entry'] if trade else 0.0,
-                "SL": trade['sl'] if trade else 0.0,
-                "Target": trade['target'] if trade else 0.0,
-                "Signal": " | ".join(sigs), 
-                "Status": status, 
-                "Prob": p_text, 
-                "Time": e_time,
-                "InTrade": 1 if trade else 0, 
-                "ROC_Val": abs(roc_val)
-            })
         return pd.DataFrame(results)
-    except: return pd.DataFrame()
+    except: 
+        return pd.DataFrame()
 
 # --- RENDER ---
 df_raw = get_dashboard()
@@ -258,7 +271,6 @@ if not df_raw.empty:
     })
 
     with table_placeholder.container():
-        # Streamlit requires custom HTML columns to be rendered explicitly via safe_html configuration
         st.dataframe(styled_view, use_container_width=True, hide_index=True)
 else:
     st.info("🔄 Processing candle data matching filter parameters...")
