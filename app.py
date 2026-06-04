@@ -1,4 +1,4 @@
-#G6.02.06.26
+#G7.04.06.26
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -130,9 +130,14 @@ def get_dashboard():
             if vol_surge: prob_score += 1
 
             y = df['Close'].tail(14).values
-            slope, _ = np.polyfit(np.arange(len(y)), y, 1)
+            slope, intercept = np.polyfit(np.arange(len(y)), y, 1)
             lrc_dir = "UP" if slope > 0 else "DOWN"
             if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
+            
+            # --- CALCULATE LRC2 vs AVG PRICE FLAG ---
+            avg_price = np.mean(y)
+            lrc2 = (slope * (len(y) - 1)) + intercept
+            trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
             
             ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
             if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
@@ -205,8 +210,8 @@ def get_dashboard():
                 continue
 
             results.append({
-                "Stock": flag + symbol, # Flag added directly in front of the name
-                "Trade": trade_cond,
+                "Stock": flag + symbol, 
+                "Trade": trade_flag + trade_cond, # Conditional flag added here
                 "Qty": int(capital // cmp), 
                 "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
