@@ -1,4 +1,4 @@
-#G9.09.06.26
+#G9.09.06.26_REVERSED
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +9,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.7", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.7 (Reversed)", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_final.json"
 
@@ -47,7 +47,7 @@ if 'active_trades' not in st.session_state:
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Settings")
+    st.header("⚙️ Settings (Contrarian)")
     capital = st.number_input("Capital (₹)", min_value=1000, value=5000, step=1000)
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
@@ -119,7 +119,6 @@ def get_dashboard():
             if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
             
             # --- EVALUATE FLAG COLOR ---
-            # Green if absolute ROC is between 1% and 5%, Red otherwise
             if 1.0 <= abs(roc_val) <= 5.0:
                 flag = "🟢 "
             else:
@@ -137,7 +136,8 @@ def get_dashboard():
             # --- CALCULATE LRC2 vs AVG PRICE FLAG ---
             avg_price = np.mean(y)
             lrc2 = (slope * (len(y) - 1)) + intercept
-            trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
+            # Reversed Strategy Flag: green if LRC is below average (undervalued bounce setup)
+            trade_flag = "🟢 " if lrc2 < avg_price else "🔴 "
             
             # --- CALCULATE ADX INDICATOR MATRIX ---
             high = df['High'].values
@@ -200,13 +200,14 @@ def get_dashboard():
                     del st.session_state.active_trades[symbol]
                     save_persistent_trades(st.session_state.active_trades)
             elif vol_surge:
+                # --- FLIPPED EXECUTION LOGIC FOR ENGINE SIGNALS ---
                 if cmp > c_open and lrc_dir == "UP":
-                    t_type = "BUY"
-                    status = "🔥 BUY"
+                    t_type = "SELL"  # Flipped from BUY to SELL
+                    status = "❄️ SELL"
                     prob_score += 1
                 elif cmp < c_open and lrc_dir == "DOWN":
-                    t_type = "SELL"
-                    status = "❄️ SELL"
+                    t_type = "BUY"   # Flipped from SELL to BUY
+                    status = "🔥 BUY"
                     prob_score += 1
                 else:
                     t_type = None
@@ -214,6 +215,7 @@ def get_dashboard():
                 if t_type:
                     p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
                     entry = cmp
+                    # Target and Stop Loss ranges adjust seamlessly based on the flipped type assignment
                     target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
                     sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
                     
@@ -225,10 +227,11 @@ def get_dashboard():
             else:
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
-            # Compute "Trade" conditions
-            if p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up:
+            # --- FLIPPED CONDITIONAL SCOREBOARD LABELING ---
+            # Smart Buy is generated when indicators drop but volume/reversal filters suggest a bounce top-out
+            if p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up:
                 trade_cond = "S.Buy"
-            elif p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up:
+            elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up:
                 trade_cond = "S.Sell"
             else:
                 trade_cond = "-"
@@ -281,9 +284,14 @@ if not df_raw.empty:
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
             if row['Status'] == "IN TRADE":
-                row_bg = '#c6f6d5' if row['Target'] > row['Entry'] else '#fed7d7'
+                # Adjusted color mapping based on dynamic trade positions
+                row_bg = '#c6f6d5' if row['type'] == 'BUY' else '#fed7d7'
                 styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
-                cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
+                
+                if row['type'] == 'BUY':
+                    cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
+                else:
+                    cmp_bg = '#1a8a44' if row['CMP'] <= row['Entry'] else '#c53030'
                 styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
         return styles
 
