@@ -1,4 +1,4 @@
-#G7.04.06.26
+#G9.09.06.26
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -119,9 +119,9 @@ def get_dashboard():
             if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
             
             # --- EVALUATE FLAG COLOR ---
-            # Blue if absolute ROC is between 1% and 5%, Red otherwise
+            # Green if absolute ROC is between 1% and 5%, Red otherwise
             if 1.0 <= abs(roc_val) <= 5.0:
-                flag = "🔵 "
+                flag = "🟢 "
             else:
                 flag = "🔴 "
             
@@ -138,6 +138,46 @@ def get_dashboard():
             avg_price = np.mean(y)
             lrc2 = (slope * (len(y) - 1)) + intercept
             trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
+            
+            # --- CALCULATE ADX INDICATOR MATRIX ---
+            high = df['High'].values
+            low = df['Low'].values
+            close = df['Close'].values
+            
+            prev_high = df['High'].shift(1).values
+            prev_low = df['Low'].shift(1).values
+            prev_close = df['Close'].shift(1).values
+            
+            tr1 = high - low
+            tr2 = np.abs(high - prev_close)
+            tr3 = np.abs(low - prev_close)
+            tr = np.nanmax(np.vstack([tr1, tr2, tr3]), axis=0)
+            
+            up_move = high - prev_high
+            down_move = prev_low - low
+            
+            plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+            minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+            
+            window = 14
+            if len(df) >= window + 2:
+                tr_smooth = pd.Series(tr).rolling(window).sum().values
+                plus_dm_smooth = pd.Series(plus_dm).rolling(window).sum().values
+                minus_dm_smooth = pd.Series(minus_dm).rolling(window).sum().values
+                
+                plus_di = 100 * (plus_dm_smooth / np.where(tr_smooth == 0, 1e-9, tr_smooth))
+                minus_di = 100 * (minus_dm_smooth / np.where(tr_smooth == 0, 1e-9, tr_smooth))
+                
+                di_sum = plus_di + minus_di
+                di_diff = np.abs(plus_di - minus_di)
+                dx = 100 * (di_diff / np.where(di_sum == 0, 1e-9, di_sum))
+                
+                adx_series = pd.Series(dx).rolling(window).mean().values
+                current_adx = float(adx_series[-1]) if not np.isnan(adx_series[-1]) else 0.0
+            else:
+                current_adx = 0.0
+                
+            qty_flag = "🟢 " if current_adx > 20 else "🔴 "
             
             ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
             if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
@@ -211,7 +251,7 @@ def get_dashboard():
 
             results.append({
                 "Stock": flag + symbol, 
-                "Trade": trade_flag + trade_cond, # Conditional flag added here
+                "Trade": trade_flag + trade_cond, 
                 "Qty": int(capital // cmp), 
                 "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
@@ -222,7 +262,8 @@ def get_dashboard():
                 "Prob": p_text, 
                 "Time": e_time,
                 "InTrade": 1 if trade else 0, 
-                "ROC_Val": abs(roc_val)
+                "ROC_Val": abs(roc_val),
+                "Qty_Flag": qty_flag
             })
         return pd.DataFrame(results)
     except: return pd.DataFrame()
@@ -233,7 +274,7 @@ df_raw = get_dashboard()
 if not df_raw.empty:
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
-    target_order = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
+    target_order = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time", "Qty_Flag"]
     df_sorted = df_sorted[target_order]
     
     def apply_styles(df):
@@ -248,11 +289,14 @@ if not df_raw.empty:
 
     styled_view = df_sorted.style.apply(apply_styles, axis=None).format({
         "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
-        "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
+        "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-",
+        "Qty": lambda x, row=None: f"{df_sorted.loc[df_sorted.index[df_sorted['Qty'] == x][0], 'Qty_Flag']}{int(x)}"
     })
 
+    columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
+    
     with table_placeholder.container():
-        st.dataframe(styled_view, use_container_width=True, hide_index=True)
+        st.dataframe(styled_view, use_container_width=True, hide_index=True, column_order=columns_to_show)
 else:
     st.info("🔄 Processing candle data matching filter parameters...")
 
