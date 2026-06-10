@@ -1,4 +1,4 @@
-#G9.09.06.26_DUAL_MONITOR
+#G9.09.06.26_DUAL_MONITOR_FIXED
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -93,7 +93,6 @@ except:
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 
-# Container row for placing metrics side by side
 col_reg, col_rev = st.columns(2)
 
 # --- CALCULATION LOGIC CORE ---
@@ -112,6 +111,7 @@ def process_strategy(data, is_reversed=False):
         
         sigs = []
         prob_score = 0
+        p_text = "LOW"  # FIXED: Default assignment to prevent UnboundLocalError
         
         # ROC Calculation
         p5 = df['Close'].iloc[-6]
@@ -135,7 +135,6 @@ def process_strategy(data, is_reversed=False):
         avg_price = np.mean(y)
         lrc2 = (slope * (len(y) - 1)) + intercept
         
-        # Trade Flag Divergence Rule
         if is_reversed:
             trade_flag = "🟢 " if lrc2 < avg_price else "🔴 "
         else:
@@ -174,7 +173,7 @@ def process_strategy(data, is_reversed=False):
         
         if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
 
-        # Memory Check isolation
+        # Memory Check
         trade = st.session_state.dual_trades[strategy_key].get(symbol)
         status = "WAITING"
         e_time = ist_now.strftime("%H:%M")
@@ -189,9 +188,7 @@ def process_strategy(data, is_reversed=False):
                 del st.session_state.dual_trades[strategy_key][symbol]
                 save_persistent_trades(st.session_state.dual_trades)
         elif vol_surge:
-            # Check setup rules depending on standard or contrarian tracking selection
             if not is_reversed:
-                # --- STANDARD STRATEGY RULES ---
                 if cmp > c_open and lrc_dir == "UP":
                     t_type, status = "BUY", "🔥 BUY"
                     prob_score += 1
@@ -199,7 +196,6 @@ def process_strategy(data, is_reversed=False):
                     t_type, status = "SELL", "❄️ SELL"
                     prob_score += 1
             else:
-                # --- REVERSED STRATEGY RULES ---
                 if cmp > c_open and lrc_dir == "UP":
                     t_type, status = "SELL", "❄️ SELL"
                     prob_score += 1
@@ -221,7 +217,7 @@ def process_strategy(data, is_reversed=False):
         else:
             p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
-        # Strategy matrix scoreboard naming
+        # Scoreboard setups
         if not is_reversed:
             if p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Buy"
             elif p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up: trade_cond = "S.Sell"
