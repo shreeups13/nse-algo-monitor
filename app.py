@@ -1,4 +1,4 @@
-#G9.09.06.26_REVERSED
+#G9.09.06.26_REVERSED_FIXED
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -136,7 +136,6 @@ def get_dashboard():
             # --- CALCULATE LRC2 vs AVG PRICE FLAG ---
             avg_price = np.mean(y)
             lrc2 = (slope * (len(y) - 1)) + intercept
-            # Reversed Strategy Flag: green if LRC is below average (undervalued bounce setup)
             trade_flag = "🟢 " if lrc2 < avg_price else "🔴 "
             
             # --- CALCULATE ADX INDICATOR MATRIX ---
@@ -190,6 +189,7 @@ def get_dashboard():
             trade = st.session_state.active_trades.get(symbol)
             status = "WAITING"
             e_time = ist_now.strftime("%H:%M")
+            t_type = trade.get('type') if trade else None
             
             if trade:
                 status = "IN TRADE"
@@ -200,13 +200,12 @@ def get_dashboard():
                     del st.session_state.active_trades[symbol]
                     save_persistent_trades(st.session_state.active_trades)
             elif vol_surge:
-                # --- FLIPPED EXECUTION LOGIC FOR ENGINE SIGNALS ---
                 if cmp > c_open and lrc_dir == "UP":
-                    t_type = "SELL"  # Flipped from BUY to SELL
+                    t_type = "SELL"
                     status = "❄️ SELL"
                     prob_score += 1
                 elif cmp < c_open and lrc_dir == "DOWN":
-                    t_type = "BUY"   # Flipped from SELL to BUY
+                    t_type = "BUY"
                     status = "🔥 BUY"
                     prob_score += 1
                 else:
@@ -215,7 +214,6 @@ def get_dashboard():
                 if t_type:
                     p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
                     entry = cmp
-                    # Target and Stop Loss ranges adjust seamlessly based on the flipped type assignment
                     target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
                     sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
                     
@@ -227,8 +225,6 @@ def get_dashboard():
             else:
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
-            # --- FLIPPED CONDITIONAL SCOREBOARD LABELING ---
-            # Smart Buy is generated when indicators drop but volume/reversal filters suggest a bounce top-out
             if p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up:
                 trade_cond = "S.Buy"
             elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up:
@@ -252,10 +248,13 @@ def get_dashboard():
             if filter_trade_type == "Blank Only" and trade_cond != "-":
                 continue
 
+            # Pre-combine the flag and string to avoid KeyError lookup crashes later
+            formatted_qty = f"{qty_flag}{int(capital // cmp)}"
+
             results.append({
                 "Stock": flag + symbol, 
                 "Trade": trade_flag + trade_cond, 
-                "Qty": int(capital // cmp), 
+                "Qty": formatted_qty, 
                 "CMP": cmp,
                 "Entry": trade['entry'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0,
@@ -266,7 +265,7 @@ def get_dashboard():
                 "Time": e_time,
                 "InTrade": 1 if trade else 0, 
                 "ROC_Val": abs(roc_val),
-                "Qty_Flag": qty_flag
+                "TradeType": t_type
             })
         return pd.DataFrame(results)
     except: return pd.DataFrame()
@@ -277,18 +276,17 @@ df_raw = get_dashboard()
 if not df_raw.empty:
     df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
-    target_order = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time", "Qty_Flag"]
+    target_order = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time", "TradeType"]
     df_sorted = df_sorted[target_order]
     
     def apply_styles(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
             if row['Status'] == "IN TRADE":
-                # Adjusted color mapping based on dynamic trade positions
-                row_bg = '#c6f6d5' if row['type'] == 'BUY' else '#fed7d7'
+                row_bg = '#c6f6d5' if row['TradeType'] == 'BUY' else '#fed7d7'
                 styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
                 
-                if row['type'] == 'BUY':
+                if row['TradeType'] == 'BUY':
                     cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
                 else:
                     cmp_bg = '#1a8a44' if row['CMP'] <= row['Entry'] else '#c53030'
@@ -298,9 +296,9 @@ if not df_raw.empty:
     styled_view = df_sorted.style.apply(apply_styles, axis=None).format({
         "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
         "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-",
-        "Qty": lambda x, row=None: f"{df_sorted.loc[df_sorted.index[df_sorted['Qty'] == x][0], 'Qty_Flag']}{int(x)}"
     })
 
+    # Display columns matching setup cleanly without spilling structural calculation layers
     columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
     
     with table_placeholder.container():
