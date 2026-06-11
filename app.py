@@ -1,4 +1,4 @@
-#G9.11.06.26_UNIFORM_DECISION_ENGINE_WITH_FILTERS
+#G9.11.06.26_UNIFIED_INTELLIGENCE_DASHBOARD
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +9,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v5.1 (Uniform Automation + Filters)", layout="wide", page_icon="🤖")
+st.set_page_config(page_title="NSE Pro Monitor v6.0 (Unified Intelligence)", layout="wide", page_icon="🤖")
 
 TRADES_FILE = "trade_history_uniform.json"
 
@@ -54,7 +54,7 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
-    st.subheader("🎯 Custom Filters")  # RESTORED CUSTOM FILTERS SECTION
+    st.subheader("🎯 Custom Filters")  
     filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.00, step=0.01, format="%.2f")
     filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.00, step=0.01, format="%.2f")
     filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
@@ -277,49 +277,53 @@ def apply_dynamic_styles(df):
 
 columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
 
-# --- AUTOMATED SENSITIVITY ALLOCATION MATRIX ---
+# --- INTELLIGENT REGIME ASSESSMENT BLOCK ---
 master_index_change = n_chg if n_chg != 0.0 else s_chg
 
 if master_index_change > trend_threshold:
-    current_regime = "🟢 BULLISH TREND REGIME"
-    active_monitor = "REGULAR"
+    env_msg = f"📈 **TREND EXPANSION DOMINANT** ({master_index_change:+.2f}%) — Focus primarily on the Regular Monitor matrix. Directional breakouts are highly supported by the broad index."
+    favored = "REGULAR"
 elif master_index_change < -trend_threshold:
-    current_regime = "🔴 BEARISH TREND REGIME"
-    active_monitor = "REGULAR"
+    env_msg = f"📉 **TREND BREAKDOWN DOMINANT** ({master_index_change:+.2f}%) — Focus primarily on the Regular Monitor matrix. Short momentum setups have clear statistical backing."
+    favored = "REGULAR"
 else:
-    current_regime = "🟡 SIDEWAYS RANGE REGIME"
-    active_monitor = "REVERSED"
+    env_msg = f"🔄 **MEAN REVERSION DOMINANT** ({master_index_change:+.2f}%) — Market is locked inside a channel range. Focus primarily on the Reversed Monitor matrix to catch extremes snapping back."
+    favored = "REVERSED"
 
-# Render Master Switch Indicator Block
-st.info(f"🤖 **Uniform Decision Engine Active:** System routed layout allocation to the **{active_monitor} MONITOR** based on a sensitivity profile of `{master_index_change:+.2f}%` matching the `{current_regime}` framework.")
+# Display Live Macro-Guidance Status Box at top of screen
+st.info(env_msg)
 
-# --- ENFORCED UNIFORM RENDERING ---
-if active_monitor == "REGULAR":
-    st.subheader("📊 1) REGULAR MONITOR (Trend Following Expansion)")
+# --- UNIFIED SIDE-BY-SIDE VIEW LAYOUT ---
+# Creates 2 equal columns instead of hiding data
+col1, col2 = st.columns(2)
+
+with col1:
+    title_suffix = " 🔥 [FAVORED REGIME]" if favored == "REGULAR" else ""
+    st.subheader(f"📊 1) REGULAR MONITOR (Trends){title_suffix}")
+    
     if not isinstance(raw_market_data, dict) and not raw_market_data.empty:
         df_reg = process_strategy(raw_market_data, is_reversed=False)
         if not df_reg.empty:
-            # Uniform Direction Rule Strategy Filter
-            if master_index_change < 0:
+            # We filter directional alignment but NEVER completely hide the monitor panel
+            if master_index_change < -trend_threshold:
                 df_reg = df_reg[df_reg['TradeCondRaw'].str.contains("S.Sell|-")]
-            else:
+            elif master_index_change > trend_threshold:
                 df_reg = df_reg[df_reg['TradeCondRaw'].str.contains("S.Buy|-")]
                 
-            if not df_reg.empty:
-                view_reg = df_reg.style.apply(apply_dynamic_styles, axis=None).format({
-                    "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
-                    "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
-                })
-                st.dataframe(view_reg, use_container_width=True, hide_index=True, column_order=columns_to_show)
-            else:
-                st.caption("No tickers matching the active directional trend filter rules.")
+            view_reg = df_reg.style.apply(apply_dynamic_styles, axis=None).format({
+                "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
+                "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
+            })
+            st.dataframe(view_reg, use_container_width=True, hide_index=True, column_order=columns_to_show)
         else:
-            st.caption("No matching tickers found within your current Custom ROC or Trade Type filters.")
+            st.caption("No trend tickers passing filters currently.")
     else:
-        st.info("Awaiting live exchange stream connections...")
+        st.info("Awaiting live data streams...")
 
-elif active_monitor == "REVERSED":
-    st.subheader("🔄 2) REVERSED MONITOR (Mean Reversion Compression)")
+with col2:
+    title_suffix = " 🔥 [FAVORED REGIME]" if favored == "REVERSED" else ""
+    st.subheader(f"🔄 2) REVERSED MONITOR (Mean Reversions){title_suffix}")
+    
     if not isinstance(raw_market_data, dict) and not raw_market_data.empty:
         df_rev = process_strategy(raw_market_data, is_reversed=True)
         if not df_rev.empty:
@@ -329,9 +333,9 @@ elif active_monitor == "REVERSED":
             })
             st.dataframe(view_rev, use_container_width=True, hide_index=True, column_order=columns_to_show)
         else:
-            st.caption("No matching tickers found within your current Custom ROC or Trade Type filters.")
+            st.caption("No mean-reversion anomalies found inside the ranges.")
     else:
-        st.info("Awaiting live exchange stream connections...")
+        st.info("Awaiting live data streams...")
 
 # --- AUTOMATED ENGINE REFRESH LOOP ---
 time.sleep(60 if open_status else 300)
