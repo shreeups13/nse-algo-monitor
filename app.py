@@ -1,4 +1,4 @@
-#G9.11.06.26_UNIFORM_DECISION_ENGINE
+#G9.11.06.26_UNIFORM_DECISION_ENGINE_WITH_FILTERS
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +9,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v5.0 (Uniform Automation)", layout="wide", page_icon="🤖")
+st.set_page_config(page_title="NSE Pro Monitor v5.1 (Uniform Automation + Filters)", layout="wide", page_icon="🤖")
 
 TRADES_FILE = "trade_history_uniform.json"
 
@@ -54,8 +54,13 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
+    st.subheader("🎯 Custom Filters")  # RESTORED CUSTOM FILTERS SECTION
+    filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.00, step=0.01, format="%.2f")
+    filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.00, step=0.01, format="%.2f")
+    filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
+    
+    st.markdown("---")
     st.subheader("🎯 Sensitivity Thresholds")
-    # This acts as the mathematical filter derived from sensitivity analysis
     trend_threshold = st.number_input("Trend Boundary Threshold (%)", min_value=0.05, max_value=0.50, value=0.15, step=0.01, format="%.2f")
     
     st.markdown("---")
@@ -76,7 +81,7 @@ with st.sidebar:
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
-# --- FETCH MARKET INDICES INDEPENDENTLY ---
+# --- FETCH MARKET INDICES ---
 ist_now = get_ist()
 open_status, status_text = is_market_open()
 
@@ -112,7 +117,7 @@ def process_strategy(data, is_reversed=False):
         
         sigs = []
         prob_score = 0
-        p_text = "LOW"  # Protected baseline initialization
+        p_text = "LOW"
         
         # ROC Calculation Block
         p5 = df['Close'].iloc[-6]
@@ -228,6 +233,15 @@ def process_strategy(data, is_reversed=False):
             elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Sell"
             else: trade_cond = "-"
 
+        # --- RESTORED DYNAMIC ROW FILTERS ---
+        if roc_val >= 0 and roc_val < filter_roc_gt: continue
+        if roc_val < 0 and roc_val > -filter_roc_lt: continue
+
+        if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy": continue
+        if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell": continue
+        if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]: continue
+        if filter_trade_type == "Blank Only" and trade_cond != "-": continue
+
         results.append({
             "Stock": flag + symbol, "Trade": trade_flag + trade_cond, "Qty": f"{qty_flag}{int(capital // cmp)}", 
             "CMP": cmp, "Entry": trade['entry'] if trade else 0.0, "SL": trade['sl'] if trade else 0.0,
@@ -285,7 +299,7 @@ if active_monitor == "REGULAR":
     if not isinstance(raw_market_data, dict) and not raw_market_data.empty:
         df_reg = process_strategy(raw_market_data, is_reversed=False)
         if not df_reg.empty:
-            # Uniform Rule Strategy Filter: Avoid taking counter trades inside strong direction trends
+            # Uniform Direction Rule Strategy Filter
             if master_index_change < 0:
                 df_reg = df_reg[df_reg['TradeCondRaw'].str.contains("S.Sell|-")]
             else:
@@ -298,9 +312,9 @@ if active_monitor == "REGULAR":
                 })
                 st.dataframe(view_reg, use_container_width=True, hide_index=True, column_order=columns_to_show)
             else:
-                st.caption("No tickers matching the active directional trend right now.")
+                st.caption("No tickers matching the active directional trend filter rules.")
         else:
-            st.caption("No matching tickers identified inside filters.")
+            st.caption("No matching tickers found within your current Custom ROC or Trade Type filters.")
     else:
         st.info("Awaiting live exchange stream connections...")
 
@@ -315,7 +329,7 @@ elif active_monitor == "REVERSED":
             })
             st.dataframe(view_rev, use_container_width=True, hide_index=True, column_order=columns_to_show)
         else:
-            st.caption("No compressed mean-reversion anomalies found inside this horizontal channel range.")
+            st.caption("No matching tickers found within your current Custom ROC or Trade Type filters.")
     else:
         st.info("Awaiting live exchange stream connections...")
 
