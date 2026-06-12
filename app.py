@@ -1,4 +1,4 @@
-#G9.12.06.26_FINAL_UNIFIED_TRADE_WINDOW
+#G9.12.06.26_STOCK_CENTRIC_FINAL_TRADE_WINDOW
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +9,7 @@ import json
 import os
 
 # --- INITIALIZATION & CONFIG ---
-st.set_page_config(page_title="NSE Pro Monitor v8.0 (Unified Execution)", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="NSE Pro Monitor v9.0 (Stock Centric)", layout="wide", page_icon="🚀")
 
 TRADES_FILE = "trade_history_uniform.json"
 
@@ -58,10 +58,6 @@ with st.sidebar:
     filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.00, step=0.01, format="%.2f")
     
     st.markdown("---")
-    st.subheader("🎯 Sensitivity Thresholds")
-    trend_threshold = st.number_input("Trend Boundary Threshold (%)", min_value=0.05, max_value=0.50, value=0.15, step=0.01, format="%.2f")
-    
-    st.markdown("---")
     st.subheader("🛠️ Technical Overlays")
     use_ma20 = st.checkbox("MA (20)", value=True)
     use_ema9 = st.checkbox("EMA (9)", value=True)
@@ -78,28 +74,15 @@ with st.sidebar:
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
-# --- MARKET BENCHMARK STREAMS ---
+# --- DISPLAY CLOCK ---
 ist_now = get_ist()
 open_status, status_text = is_market_open()
-n_chg, s_chg = 0.0, 0.0
-
-try:
-    indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)['Close']
-    n_curr, n_prev = indices["^NSEI"].dropna().iloc[-1], indices["^NSEI"].dropna().iloc[0]
-    s_curr, s_prev = indices["^BSESN"].dropna().iloc[-1], indices["^BSESN"].dropna().iloc[0]
-    n_chg = ((n_curr - n_prev) / n_prev) * 100
-    s_chg = ((s_curr - s_prev) / s_prev) * 100
-    st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
-except:
-    st.markdown("### Indices: `Synchronizing with Exchange...`")
-
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 st.markdown("---")
 
 # --- CORE MATH STRATEGY ENGINE ---
-def process_engine(data, is_reversed=False):
+def process_stock_centric_engine(data):
     results = []
-    strategy_key = "reversed" if is_reversed else "regular"
     
     for symbol in SYMBOLS:
         t_str = f"{symbol}.NS"
@@ -133,10 +116,6 @@ def process_engine(data, is_reversed=False):
         avg_price = np.mean(y)
         lrc2 = (slope * (len(y) - 1)) + intercept
         
-        # Check if setup matches strategy type framework
-        if is_reversed and not (lrc2 < avg_price): continue
-        if not is_reversed and not (lrc2 > avg_price): continue
-        
         # 4. ADX Trend Intensity
         high, low, close = df['High'].values, df['Low'].values, df['Close'].values
         prev_high, prev_low, prev_close = df['High'].shift(1).values, df['Low'].shift(1).values, df['Close'].shift(1).values
@@ -158,7 +137,13 @@ def process_engine(data, is_reversed=False):
         ema_up = cmp > df['Close'].ewm(span=9).mean().iloc[-1]
         if use_ema9: sigs.append("↑EMA" if ema_up else "↓EMA")
 
-        # 6. Active Execution Calculations
+        # 6. Evaluate Strategy Type Based Entirely On Stock Metrics Instead of Index Matrix
+        # If LRC endpoint is above average price, look for breakout momentum. Else look for mean reversion exhaustion.
+        is_reversed = False if (lrc2 > avg_price) else True
+        strategy_key = "reversed" if is_reversed else "regular"
+        strat_display = "REVERSION 🔄" if is_reversed else "TREND 📊"
+
+        # Check for existing open positions
         trade = st.session_state.dual_trades[strategy_key].get(symbol)
         status, t_type = "WAITING", None
         e_time = ist_now.strftime("%H:%M")
@@ -176,10 +161,10 @@ def process_engine(data, is_reversed=False):
                 status = "WAITING"
         
         if not trade and vol_surge:
-            if not is_reversed: # Trend Breakdown & Expansion Lookups
+            if not is_reversed: 
                 if cmp > c_open and lrc_dir == "UP": t_type, status = "BUY", "🔥 BUY"
                 elif cmp < c_open and lrc_dir == "DOWN": t_type, status = "SELL", "❄️ SELL"
-            else: # Mean Reversion Lookups
+            else: 
                 if cmp > c_open and lrc_dir == "UP": t_type, status = "SELL", "❄️ SELL"
                 elif cmp < c_open and lrc_dir == "DOWN": t_type, status = "BUY", "🔥 BUY"
 
@@ -203,13 +188,13 @@ def process_engine(data, is_reversed=False):
         else:
             trade_cond = "S.Buy" if (p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up) else "S.Sell" if (p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up) else "-"
 
-        # Static Row Filters
+        # Custom user sidebar filters
         if roc_val >= 0 and roc_val < filter_roc_gt: continue
         if roc_val < 0 and roc_val > -filter_roc_lt: continue
 
         results.append({
             "Stock": ("🟢 " if 1.0 <= abs(roc_val) <= 5.0 else "🔴 ") + symbol,
-            "Strategy Mode": "TREND 📊" if not is_reversed else "REVERSION 🔄",
+            "Strategy Mode": strat_display,
             "Trade": ("🟢 " if "Buy" in trade_cond or (trade and trade['type'] == 'BUY') else "🔴 " if "Sell" in trade_cond or (trade and trade['type'] == 'SELL') else "⚪ ") + trade_cond,
             "Qty": f"{'🟢 ' if current_adx > 20 else '🔴 '}{int(capital // cmp)}", 
             "CMP": cmp, 
@@ -233,39 +218,20 @@ try:
 except:
     raw_market_data = {}
 
-# --- INTELLIGENT ROUTING & SIGNAL ALIGNMENT ---
-master_index_change = n_chg if n_chg != 0.0 else s_chg
-
-if master_index_change > trend_threshold:
-    active_regime = "REGULAR"
-    env_msg = f"📈 **TREND EXPANSION DOMINANT ({master_index_change:+.2f}%)** — Running Trend Breakout Engine. Reversion triggers completely hidden."
-elif master_index_change < -trend_threshold:
-    active_regime = "REGULAR"
-    env_msg = f"📉 **TREND BREAKDOWN DOMINANT ({master_index_change:+.2f}%)** — Running Trend Short Engine. Reversion triggers completely hidden."
-else:
-    active_regime = "REVERSED"
-    env_msg = f"🔄 **MEAN REVERSION DOMINANT ({master_index_change:+.2f}%)** — Running Channel Mean-Reversion Engine. High-volatility trend entries muted."
-
-st.info(env_msg)
-
-# --- PROCESS BOTH ENGINES SIMULTANEOUSLY ---
-compiled_trades = []
-if not isinstance(raw_market_data, dict) and not raw_market_data.empty:
-    if active_regime == "REGULAR":
-        compiled_trades.extend(process_engine(raw_market_data, is_reversed=False))
-    else:
-        compiled_trades.extend(process_engine(raw_market_data, is_reversed=True))
-
-# --- RENDER UNIFIED FINAL TRADE WINDOW ---
-st.markdown("---")
-st.subheader(f"🚀 Final Trade Window: {('REGULAR MONITOR (Trends)' if active_regime == 'REGULAR' else 'REVERSED MONITOR (Reversions)')}")
+# --- RENDER UNIFIED FINAL STOCK WINDOW ---
+st.success("🎯 **Stock-Centric Analysis Mode Active.** Tickers are processed independently of broad market trend rules to catch independent movers.")
+st.subheader("🚀 Final Trade Window (Aligned Stock Actions)")
 
 columns_to_show = ["Stock", "Strategy Mode", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
+
+compiled_trades = []
+if not isinstance(raw_market_data, dict) and not raw_market_data.empty:
+    compiled_trades = process_stock_centric_engine(raw_market_data)
 
 if compiled_trades:
     df_final = pd.DataFrame(compiled_trades)
     
-    # Sort positions to keep active trades locked perfectly to the top of your layout
+    # Keep active positions perfectly locked to the top row layout
     df_final = df_final.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
     def apply_dynamic_styles(df):
@@ -289,7 +255,7 @@ if compiled_trades:
     
     st.dataframe(view_final, use_container_width=True, hide_index=True, column_order=columns_to_show)
 else:
-    st.caption("No tickers currently passing the aligned regime filters. Waiting for structural signals...")
+    st.caption("No tickers passing structural parameter criteria. Monitoring raw data streams...")
 
 # --- AUTOMATED REFRESH LOOP ---
 time.sleep(60 if open_status else 300)
