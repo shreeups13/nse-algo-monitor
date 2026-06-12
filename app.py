@@ -1,4 +1,4 @@
-#G9.09.06.26_DUAL_MONITOR_WITH_TRADE_WINDOW
+#G9.09.06.26_DUAL_MONITOR_FIXED_TRADE_WINDOW
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -269,43 +269,47 @@ def apply_dynamic_styles(df):
 
 columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
 
-# Process data streams for display layers
+# Process datasets
 df_reg = process_strategy(raw_market_data, is_reversed=False) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
 df_rev = process_strategy(raw_market_data, is_reversed=True) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
 
 
-# --- 🏢 NEW WINDOW: TRADE WINDOW ---
+# --- 🏢 CHANGED ELEMENT: 1) TRADE WINDOW ---
 st.markdown("---")
 st.header("🪟 1) TRADE WINDOW")
 
-# Extract active conditions across both strategy sets
-active_reg = df_reg[df_reg['Status'] == "IN TRADE"] if not df_reg.empty else pd.DataFrame()
-active_rev = df_rev[df_rev['Status'] == "IN TRADE"] if not df_rev.empty else pd.DataFrame()
-
-if not active_reg.empty or not active_rev.empty:
-    col_t_reg, col_t_rev = st.columns(2)
-    
-    with col_t_reg:
-        st.subheader("🟢 REGULAR")
-        if not active_reg.empty:
-            view_t_reg = active_reg.style.apply(apply_dynamic_styles, axis=None).format({
-                "CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}", "SL": "{:.2f}"
-            })
-            st.dataframe(view_t_reg, use_container_width=True, hide_index=True, column_order=columns_to_show)
-        else:
-            st.caption("No active Regular trades passing trigger boundaries.")
-
-    with col_t_rev:
-        st.subheader("🔄 REVERSED")
-        if not active_rev.empty:
-            view_t_rev = active_rev.style.apply(apply_dynamic_styles, axis=None).format({
-                "CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}", "SL": "{:.2f}"
-            })
-            st.dataframe(view_t_rev, use_container_width=True, hide_index=True, column_order=columns_to_show)
-        else:
-            st.caption("No active Reversed trades passing trigger boundaries.")
+# Filter logic looking for matches adhering strict layout conditions: Status is 'IN TRADE' and (CMP > Entry OR CMP < Entry)
+if not df_reg.empty:
+    active_reg = df_reg[(df_reg['Status'] == "IN TRADE") & ((df_reg['CMP'] > df_reg['Entry']) | (df_reg['CMP'] < df_reg['Entry']))]
 else:
-    st.info("No active open positions match conditions ($CMP > Entry$ or $CMP < Entry$) across data matrix layouts.")
+    active_reg = pd.DataFrame()
+
+if not df_rev.empty:
+    active_rev = df_rev[(df_rev['Status'] == "IN TRADE") & ((df_rev['CMP'] > df_rev['Entry']) | (df_rev['CMP'] < df_rev['Entry']))]
+else:
+    active_rev = pd.DataFrame()
+
+col_t_reg, col_t_rev = st.columns(2)
+
+with col_t_reg:
+    st.subheader("🟢 REGULAR")
+    if not active_reg.empty:
+        view_t_reg = active_reg.style.apply(apply_dynamic_styles, axis=None).format({
+            "CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}", "SL": "{:.2f}"
+        })
+        st.dataframe(view_t_reg, use_container_width=True, hide_index=True, column_order=columns_to_show)
+    else:
+        st.caption("No tickers matching active trade condition (CMP > Entry or CMP < Entry).")
+
+with col_t_rev:
+    st.subheader("🔄 REVERSED")
+    if not active_rev.empty:
+        view_t_rev = active_rev.style.apply(apply_dynamic_styles, axis=None).format({
+            "CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}", "SL": "{:.2f}"
+        })
+        st.dataframe(view_t_rev, use_container_width=True, hide_index=True, column_order=columns_to_show)
+    else:
+        st.caption("No tickers matching active trade condition (CMP > Entry or CMP < Entry).")
 
 
 # --- RENDER SIDE-BY-SIDE PANELS ---
