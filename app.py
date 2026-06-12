@@ -1,4 +1,4 @@
-#G9.12.06.26_STOCK_CENTRIC_FINAL_TRADE_WINDOW
+#G9.11.06.26_STOCK_CENTRIC_FIXED_FINAL_TRADE_WINDOW
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +9,7 @@ import json
 import os
 
 # --- INITIALIZATION & CONFIG ---
-st.set_page_config(page_title="NSE Pro Monitor v9.0 (Stock Centric)", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="NSE Pro Monitor v9.1 (Stock Centric Fix)", layout="wide", page_icon="🚀")
 
 TRADES_FILE = "trade_history_uniform.json"
 
@@ -56,6 +56,7 @@ with st.sidebar:
     st.subheader("🎯 Custom Filters")  
     filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.00, step=0.01, format="%.2f")
     filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.00, step=0.01, format="%.2f")
+    filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
     
     st.markdown("---")
     st.subheader("🛠️ Technical Overlays")
@@ -96,6 +97,10 @@ def process_stock_centric_engine(data):
         sigs = []
         prob_score = 0
         
+        # Initialize variables explicitly to prevent UnboundLocalError
+        ma_up = False
+        ema_up = False
+        
         # 1. ROC (5) Block
         p5 = df['Close'].iloc[-6]
         roc_val = ((cmp - p5) / p5) * 100
@@ -131,14 +136,13 @@ def process_stock_centric_engine(data):
         else:
             current_adx = 0.0
             
-        # 5. Overlays Moving Averages
+        # 5. Overlays Moving Averages (Assigned directly before trade logic checks)
         ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
         if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
         ema_up = cmp > df['Close'].ewm(span=9).mean().iloc[-1]
         if use_ema9: sigs.append("↑EMA" if ema_up else "↓EMA")
 
-        # 6. Evaluate Strategy Type Based Entirely On Stock Metrics Instead of Index Matrix
-        # If LRC endpoint is above average price, look for breakout momentum. Else look for mean reversion exhaustion.
+        # 6. Evaluate Strategy Type
         is_reversed = False if (lrc2 > avg_price) else True
         strategy_key = "reversed" if is_reversed else "regular"
         strat_display = "REVERSION 🔄" if is_reversed else "TREND 📊"
@@ -188,9 +192,15 @@ def process_stock_centric_engine(data):
         else:
             trade_cond = "S.Buy" if (p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up) else "S.Sell" if (p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up) else "-"
 
-        # Custom user sidebar filters
+        # Custom sidebar row filters (ROC)
         if roc_val >= 0 and roc_val < filter_roc_gt: continue
         if roc_val < 0 and roc_val > -filter_roc_lt: continue
+
+        # Sidebar Trade Type Dropdown Filter Implementation
+        if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy": continue
+        if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell": continue
+        if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]: continue
+        if filter_trade_type == "Blank Only" and trade_cond != "-": continue
 
         results.append({
             "Stock": ("🟢 " if 1.0 <= abs(roc_val) <= 5.0 else "🔴 ") + symbol,
@@ -255,7 +265,7 @@ if compiled_trades:
     
     st.dataframe(view_final, use_container_width=True, hide_index=True, column_order=columns_to_show)
 else:
-    st.caption("No tickers passing structural parameter criteria. Monitoring raw data streams...")
+    st.caption("No tickers passing structural parameter criteria or trade filters. Monitoring raw data streams...")
 
 # --- AUTOMATED REFRESH LOOP ---
 time.sleep(60 if open_status else 300)
