@@ -1,4 +1,4 @@
-#G9.09.06.26_DUAL_MONITOR_FIXED
+#G9.09.06.26_DUAL_MONITOR_WITH_TRADE_WINDOW
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -93,8 +93,6 @@ except:
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 
-col_reg, col_rev = st.columns(2)
-
 # --- CALCULATION LOGIC CORE ---
 def process_strategy(data, is_reversed=False):
     results = []
@@ -111,7 +109,7 @@ def process_strategy(data, is_reversed=False):
         
         sigs = []
         prob_score = 0
-        p_text = "LOW"  # FIXED: Default assignment to prevent UnboundLocalError
+        p_text = "LOW"
         
         # ROC Calculation
         p5 = df['Close'].iloc[-6]
@@ -248,7 +246,7 @@ def process_strategy(data, is_reversed=False):
     return df_out[["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time", "TradeType"]]
 
 
-# --- EXECUTE FETCH & RENDERING ---
+# --- EXECUTE FETCH ---
 tickers = [f"{s}.NS" for s in SYMBOLS]
 try:
     raw_market_data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
@@ -271,36 +269,70 @@ def apply_dynamic_styles(df):
 
 columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
 
-# --- RENDER SIDE-BY-SIDE PANELS ---
-with col_reg:
-    st.subheader("📊 1) REGULAR MONITOR")
-    if not isinstance(raw_market_data, dict) and not raw_market_data.empty:
-        df_reg = process_strategy(raw_market_data, is_reversed=False)
-        if not df_reg.empty:
-            view_reg = df_reg.style.apply(apply_dynamic_styles, axis=None).format({
-                "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
-                "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
+# Process data streams for display layers
+df_reg = process_strategy(raw_market_data, is_reversed=False) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
+df_rev = process_strategy(raw_market_data, is_reversed=True) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
+
+
+# --- 🏢 NEW WINDOW: TRADE WINDOW ---
+st.markdown("---")
+st.header("🪟 1) TRADE WINDOW")
+
+# Extract active conditions across both strategy sets
+active_reg = df_reg[df_reg['Status'] == "IN TRADE"] if not df_reg.empty else pd.DataFrame()
+active_rev = df_rev[df_rev['Status'] == "IN TRADE"] if not df_rev.empty else pd.DataFrame()
+
+if not active_reg.empty or not active_rev.empty:
+    col_t_reg, col_t_rev = st.columns(2)
+    
+    with col_t_reg:
+        st.subheader("🟢 REGULAR")
+        if not active_reg.empty:
+            view_t_reg = active_reg.style.apply(apply_dynamic_styles, axis=None).format({
+                "CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}", "SL": "{:.2f}"
             })
-            st.dataframe(view_reg, use_container_width=True, hide_index=True, column_order=columns_to_show)
+            st.dataframe(view_t_reg, use_container_width=True, hide_index=True, column_order=columns_to_show)
         else:
-            st.caption("No tickers match standard filters right now.")
+            st.caption("No active Regular trades passing trigger boundaries.")
+
+    with col_t_rev:
+        st.subheader("🔄 REVERSED")
+        if not active_rev.empty:
+            view_t_rev = active_rev.style.apply(apply_dynamic_styles, axis=None).format({
+                "CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}", "SL": "{:.2f}"
+            })
+            st.dataframe(view_t_rev, use_container_width=True, hide_index=True, column_order=columns_to_show)
+        else:
+            st.caption("No active Reversed trades passing trigger boundaries.")
+else:
+    st.info("No active open positions match conditions ($CMP > Entry$ or $CMP < Entry$) across data matrix layouts.")
+
+
+# --- RENDER SIDE-BY-SIDE PANELS ---
+st.markdown("---")
+col_reg, col_rev = st.columns(2)
+
+with col_reg:
+    st.subheader("📊 2) REGULAR MONITOR")
+    if not df_reg.empty:
+        view_reg = df_reg.style.apply(apply_dynamic_styles, axis=None).format({
+            "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
+            "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
+        })
+        st.dataframe(view_reg, use_container_width=True, hide_index=True, column_order=columns_to_show)
     else:
-        st.info("Awaiting live data streams...")
+        st.caption("No tickers match standard filters right now.")
 
 with col_rev:
-    st.subheader("🔄 2) REVERSED MONITOR")
-    if not isinstance(raw_market_data, dict) and not raw_market_data.empty:
-        df_rev = process_strategy(raw_market_data, is_reversed=True)
-        if not df_rev.empty:
-            view_rev = df_rev.style.apply(apply_dynamic_styles, axis=None).format({
-                "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
-                "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
-            })
-            st.dataframe(view_rev, use_container_width=True, hide_index=True, column_order=columns_to_show)
-        else:
-            st.caption("No tickers match reversal filters right now.")
+    st.subheader("🔄 3) REVERSED MONITOR")
+    if not df_rev.empty:
+        view_rev = df_rev.style.apply(apply_dynamic_styles, axis=None).format({
+            "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
+            "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
+        })
+        st.dataframe(view_rev, use_container_width=True, hide_index=True, column_order=columns_to_show)
     else:
-        st.info("Awaiting live data streams...")
+        st.caption("No tickers match reversal filters right now.")
 
 # --- REFRESH RATE ---
 time.sleep(60 if open_status else 300)
