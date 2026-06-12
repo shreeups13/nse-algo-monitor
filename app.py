@@ -1,4 +1,4 @@
-#G9.11.06.26_STOCK_CENTRIC_FIXED_FINAL_TRADE_WINDOW
+#G9.12.06.26_FINAL_STOCK_CENTRIC_ADX_OP_CL_PRO
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +9,7 @@ import json
 import os
 
 # --- INITIALIZATION & CONFIG ---
-st.set_page_config(page_title="NSE Pro Monitor v9.1 (Stock Centric Fix)", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="NSE Pro Monitor v9.3 (ADX Matrix)", layout="wide", page_icon="🚀")
 
 TRADES_FILE = "trade_history_uniform.json"
 
@@ -96,10 +96,7 @@ def process_stock_centric_engine(data):
         
         sigs = []
         prob_score = 0
-        
-        # Initialize variables explicitly to prevent UnboundLocalError
-        ma_up = False
-        ema_up = False
+        ma_up, ema_up = False, False
         
         # 1. ROC (5) Block
         p5 = df['Close'].iloc[-6]
@@ -121,7 +118,7 @@ def process_stock_centric_engine(data):
         avg_price = np.mean(y)
         lrc2 = (slope * (len(y) - 1)) + intercept
         
-        # 4. ADX Trend Intensity
+        # 4. ADX Trend Intensity + Safeguard Fallback Block
         high, low, close = df['High'].values, df['Low'].values, df['Close'].values
         prev_high, prev_low, prev_close = df['High'].shift(1).values, df['Low'].shift(1).values, df['Close'].shift(1).values
         tr = np.nanmax(np.vstack([high - low, np.abs(high - prev_close), np.abs(low - prev_close)]), axis=0)
@@ -136,27 +133,47 @@ def process_stock_centric_engine(data):
         else:
             current_adx = 0.0
             
-        # 5. Overlays Moving Averages (Assigned directly before trade logic checks)
+        sigs.append(f"ADX:{current_adx:.1f}")
+
+        # 4b. Restored Requirement: Dynamic Open vs Close Candle Metric
+        if cmp > c_open:
+            sigs.append("🟢 O<C")
+        elif cmp < c_open:
+            sigs.append("🔴 O>C")
+        else:
+            sigs.append("⚪ O=C")
+            
+        # 5. Overlays Moving Averages
         ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
         if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
         ema_up = cmp > df['Close'].ewm(span=9).mean().iloc[-1]
         if use_ema9: sigs.append("↑EMA" if ema_up else "↓EMA")
 
-        # 6. Evaluate Strategy Type
+        # 6. Strategy Mode Assignment
         is_reversed = False if (lrc2 > avg_price) else True
         strategy_key = "reversed" if is_reversed else "regular"
         strat_display = "REVERSION 🔄" if is_reversed else "TREND 📊"
 
-        # Check for existing open positions
+        # Predictive Target & Trigger Lines calculation
+        computed_entry = round(lrc2, 2)
+        is_bullish_setup = (lrc_dir == "UP" if not is_reversed else lrc_dir == "DOWN")
+        computed_target = round(computed_entry * (1 + target_pct), 2) if is_bullish_setup else round(computed_entry * (1 - target_pct), 2)
+        computed_sl = round(computed_entry * (1 - sl_pct), 2) if is_bullish_setup else round(computed_entry * (1 + sl_pct), 2)
+
+        # Handle active tracking states
         trade = st.session_state.dual_trades[strategy_key].get(symbol)
         status, t_type = "WAITING", None
         e_time = ist_now.strftime("%H:%M")
         
         if trade:
-            status = "IN TRADE"
+            status = "Position Filled ✅"
             e_time = trade.get('time', e_time)
             p_text = trade.get('prob_text', "MED")
             t_type = trade['type']
+            computed_entry = trade['entry']
+            computed_target = trade['target']
+            computed_sl = trade['sl']
+            
             if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
                (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
                 del st.session_state.dual_trades[strategy_key][symbol]
@@ -166,20 +183,16 @@ def process_stock_centric_engine(data):
         
         if not trade and vol_surge:
             if not is_reversed: 
-                if cmp > c_open and lrc_dir == "UP": t_type, status = "BUY", "🔥 BUY"
-                elif cmp < c_open and lrc_dir == "DOWN": t_type, status = "SELL", "❄️ SELL"
+                if cmp > c_open and lrc_dir == "UP": t_type, status = "BUY", "Breakout Triggered"
+                elif cmp < c_open and lrc_dir == "DOWN": t_type, status = "SELL", "Watching Breakdown"
             else: 
-                if cmp > c_open and lrc_dir == "UP": t_type, status = "SELL", "❄️ SELL"
-                elif cmp < c_open and lrc_dir == "DOWN": t_type, status = "BUY", "🔥 BUY"
+                if cmp > c_open and lrc_dir == "UP": t_type, status = "SELL", "Watching Breakdown"
+                elif cmp < c_open and lrc_dir == "DOWN": t_type, status = "BUY", "Breakout Triggered"
 
             if t_type:
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
-                entry = cmp
-                target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
-                sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
-                
                 st.session_state.dual_trades[strategy_key][symbol] = {
-                    'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
+                    'entry': computed_entry, 'target': computed_target, 'sl': computed_sl, 'type': t_type, 
                     'time': e_time, 'prob_text': p_text, 'strategy': strategy_key.upper()
                 }
                 save_persistent_trades(st.session_state.dual_trades)
@@ -192,11 +205,10 @@ def process_stock_centric_engine(data):
         else:
             trade_cond = "S.Buy" if (p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up) else "S.Sell" if (p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up) else "-"
 
-        # Custom sidebar row filters (ROC)
+        # Filters
         if roc_val >= 0 and roc_val < filter_roc_gt: continue
         if roc_val < 0 and roc_val > -filter_roc_lt: continue
 
-        # Sidebar Trade Type Dropdown Filter Implementation
         if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy": continue
         if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell": continue
         if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]: continue
@@ -208,29 +220,30 @@ def process_stock_centric_engine(data):
             "Trade": ("🟢 " if "Buy" in trade_cond or (trade and trade['type'] == 'BUY') else "🔴 " if "Sell" in trade_cond or (trade and trade['type'] == 'SELL') else "⚪ ") + trade_cond,
             "Qty": f"{'🟢 ' if current_adx > 20 else '🔴 '}{int(capital // cmp)}", 
             "CMP": cmp, 
-            "Entry": trade['entry'] if trade else 0.0, 
-            "SL": trade['sl'] if trade else 0.0,
-            "Target": trade['target'] if trade else 0.0, 
+            "Entry": computed_entry, 
+            "SL": str(computed_sl) if "Filled" not in status else status, 
+            "Target": computed_target, 
             "Signal": " | ".join(sigs), 
-            "Status": status, 
+            "Status": "IN TRADE" if trade else status, 
             "Prob": p_text, 
             "Time": e_time, 
             "InTrade": 1 if trade else 0, 
             "ROC_Val": abs(roc_val),
-            "TradeType": t_type
+            "TradeType": t_type,
+            "RegimeKey": strategy_key
         })
     return results
 
-# --- DATA STREAM CONSUMPTION LINK ---
+# --- DATA DOWNLOAD LAYER ---
 tickers = [f"{s}.NS" for s in SYMBOLS]
 try:
     raw_market_data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
 except:
     raw_market_data = {}
 
-# --- RENDER UNIFIED FINAL STOCK WINDOW ---
-st.success("🎯 **Stock-Centric Analysis Mode Active.** Tickers are processed independently of broad market trend rules to catch independent movers.")
-st.subheader("🚀 Final Trade Window (Aligned Stock Actions)")
+# --- RENDER WINDOW LAYER ---
+st.success("🎯 **Unified Stock-Centric Engine Operational.** ADX Trend Multipliers and Candle Direction trackers are live.")
+st.subheader("🚀 Final Trade Window (Stock Independent Strategy Stream)")
 
 columns_to_show = ["Stock", "Strategy Mode", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
 
@@ -240,13 +253,16 @@ if not isinstance(raw_market_data, dict) and not raw_market_data.empty:
 
 if compiled_trades:
     df_final = pd.DataFrame(compiled_trades)
-    
-    # Keep active positions perfectly locked to the top row layout
     df_final = df_final.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     
     def apply_dynamic_styles(df):
         styles = pd.DataFrame('', index=df.index, columns=df.columns)
         for i, row in df.iterrows():
+            if row['RegimeKey'] == 'regular':
+                styles.loc[i, :] = 'background-color: #f7fafc; color: black;'
+            else:
+                styles.loc[i, :] = 'background-color: #fffaf0; color: black;'
+                
             if row['Status'] == "IN TRADE":
                 row_bg = '#c6f6d5' if row['TradeType'] == 'BUY' else '#fed7d7'
                 styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
@@ -259,14 +275,13 @@ if compiled_trades:
         return styles
 
     view_final = df_final.style.apply(apply_dynamic_styles, axis=None).format({
-        "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
-        "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
+        "CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}"
     })
     
     st.dataframe(view_final, use_container_width=True, hide_index=True, column_order=columns_to_show)
 else:
-    st.caption("No tickers passing structural parameter criteria or trade filters. Monitoring raw data streams...")
+    st.caption("No tickers currently passing strategy or trade type filters.")
 
-# --- AUTOMATED REFRESH LOOP ---
+# --- AUTO REFRESH LOOP ---
 time.sleep(60 if open_status else 300)
 st.rerun()
