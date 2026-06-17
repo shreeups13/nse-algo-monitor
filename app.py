@@ -48,7 +48,7 @@ if 'active_trades' not in st.session_state:
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Settings (Contrarian)")
-    capital = st.number_input("Capital (₹)", min_value=1000, value=5000, step=1000)
+    capital = st.number_input("Capital (₹)", min_value=1000, value=20000, step=1000)
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
