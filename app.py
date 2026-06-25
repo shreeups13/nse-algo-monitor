@@ -1,4 +1,4 @@
-#G9.09.06.26_REVERSED_FIXED
+#G9.09.06.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,16 +9,16 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.7 (Reversed)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.7 (Dual Mode)", layout="wide", page_icon="📈")
 
-TRADES_FILE = "trade_history_final.json"
+TRADES_FILE = "trade_history_dual.json"
 
 def load_persistent_trades():
     if os.path.exists(TRADES_FILE):
         try:
             with open(TRADES_FILE, "r") as f: return json.load(f)
-        except: return {}
-    return {}
+        except: return {"regular": {}, "reversed": {}}
+    return {"regular": {}, "reversed": {}}
 
 def save_persistent_trades(trades):
     with open(TRADES_FILE, "w") as f: json.dump(trades, f)
@@ -42,12 +42,13 @@ def is_market_open():
     if start_time <= now <= end_time: return True, "🟢 MARKET LIVE"
     return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
 
-if 'active_trades' not in st.session_state:
-    st.session_state.active_trades = load_persistent_trades()
+# --- INITIALIZE STATE FOR BOTH STRATEGIES ---
+if 'dual_trades' not in st.session_state:
+    st.session_state.dual_trades = load_persistent_trades()
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Settings (Contrarian)")
+    st.header("⚙️ General Settings")
     capital = st.number_input("Capital (₹)", min_value=1000, value=20000, step=1000)
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
@@ -56,7 +57,6 @@ with st.sidebar:
     st.subheader("🎯 Custom Filters")
     filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.00, step=0.01, format="%.2f")
     filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.00, step=0.01, format="%.2f")
-    
     filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
     
     st.markdown("---")
@@ -72,8 +72,8 @@ with st.sidebar:
     user_input = st.text_area("Watchlist", full_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
-    if st.button("🗑️ Reset All Trades"):
-        st.session_state.active_trades = {}
+    if st.button("🗑️ Reset All Trades (Both Layouts)"):
+        st.session_state.dual_trades = {"regular": {}, "reversed": {}}
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
@@ -92,219 +92,236 @@ except:
     st.markdown("### Indices: `Connecting...`")
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
-table_placeholder = st.empty()
 
-# --- LOGIC ---
-def get_dashboard():
+# --- CALCULATION LOGIC CORE ---
+def process_strategy(data, is_reversed=False):
     results = []
-    tickers = [f"{s}.NS" for s in SYMBOLS]
-    try:
-        data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
-        for symbol in SYMBOLS:
-            t_str = f"{symbol}.NS"
-            if t_str not in data or data[t_str].empty: continue
-            df = data[t_str].dropna()
-            if len(df) < 20: continue
+    strategy_key = "reversed" if is_reversed else "regular"
+    
+    for symbol in SYMBOLS:
+        t_str = f"{symbol}.NS"
+        if t_str not in data or data[t_str].empty: continue
+        df = data[t_str].dropna()
+        if len(df) < 20: continue
 
-            cmp = float(df['Close'].iloc[-1])
-            c_open = float(df['Open'].iloc[-1])
-            
-            sigs = []
-            prob_score = 0
-            
-            # Indicators
-            p5 = df['Close'].iloc[-6]
-            roc_val = ((cmp - p5) / p5) * 100
-            if abs(roc_val) > 0.5: prob_score += 1
-            if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
-            
-            # --- EVALUATE FLAG COLOR ---
-            if 1.0 <= abs(roc_val) <= 5.0:
-                flag = "🟢 "
-            else:
-                flag = "🔴 "
-            
-            vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
-            vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
-            if vol_surge: prob_score += 1
+        cmp = float(df['Close'].iloc[-1])
+        c_open = float(df['Open'].iloc[-1])
+        
+        sigs = []
+        prob_score = 0
+        p_text = "LOW"
+        
+        # ROC Calculation
+        p5 = df['Close'].iloc[-6]
+        roc_val = ((cmp - p5) / p5) * 100
+        if abs(roc_val) > 0.5: prob_score += 1
+        if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
+        
+        flag = "🟢 " if 1.0 <= abs(roc_val) <= 5.0 else "🔴 "
+        
+        # Volume Surge Calculation
+        vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
+        vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
+        if vol_surge: prob_score += 1
 
-            y = df['Close'].tail(14).values
-            slope, intercept = np.polyfit(np.arange(len(y)), y, 1)
-            lrc_dir = "UP" if slope > 0 else "DOWN"
-            if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
-            
-            # --- CALCULATE LRC2 vs AVG PRICE FLAG ---
-            avg_price = np.mean(y)
-            lrc2 = (slope * (len(y) - 1)) + intercept
+        # LRC Trend Line Properties
+        y = df['Close'].tail(14).values
+        slope, intercept = np.polyfit(np.arange(len(y)), y, 1)
+        lrc_dir = "UP" if slope > 0 else "DOWN"
+        if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
+        
+        avg_price = np.mean(y)
+        lrc2 = (slope * (len(y) - 1)) + intercept
+        
+        if is_reversed:
             trade_flag = "🟢 " if lrc2 < avg_price else "🔴 "
+        else:
+            trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
+        
+        # ADX Calculation Block
+        high, low, close = df['High'].values, df['Low'].values, df['Close'].values
+        prev_high, prev_low, prev_close = df['High'].shift(1).values, df['Low'].shift(1).values, df['Close'].shift(1).values
+        
+        tr = np.nanmax(np.vstack([high - low, np.abs(high - prev_close), np.abs(low - prev_close)]), axis=0)
+        up_move = high - prev_high
+        down_move = prev_low - low
+        
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        
+        window = 14
+        if len(df) >= window + 2:
+            tr_s = pd.Series(tr).rolling(window).sum().values
+            p_dm_s = pd.Series(plus_dm).rolling(window).sum().values
+            m_dm_s = pd.Series(minus_dm).rolling(window).sum().values
             
-            # --- CALCULATE ADX INDICATOR MATRIX ---
-            high = df['High'].values
-            low = df['Low'].values
-            close = df['Close'].values
+            p_di = 100 * (p_dm_s / np.where(tr_s == 0, 1e-9, tr_s))
+            m_di = 100 * (m_dm_s / np.where(tr_s == 0, 1e-9, tr_s))
+            current_adx = float(pd.Series(100 * (np.abs(p_di - m_di) / np.where((p_di + m_di) == 0, 1e-9, (p_di + m_di)))).rolling(window).mean().values[-1])
+        else:
+            current_adx = 0.0
             
-            prev_high = df['High'].shift(1).values
-            prev_low = df['Low'].shift(1).values
-            prev_close = df['Close'].shift(1).values
-            
-            tr1 = high - low
-            tr2 = np.abs(high - prev_close)
-            tr3 = np.abs(low - prev_close)
-            tr = np.nanmax(np.vstack([tr1, tr2, tr3]), axis=0)
-            
-            up_move = high - prev_high
-            down_move = prev_low - low
-            
-            plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-            minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-            
-            window = 14
-            if len(df) >= window + 2:
-                tr_smooth = pd.Series(tr).rolling(window).sum().values
-                plus_dm_smooth = pd.Series(plus_dm).rolling(window).sum().values
-                minus_dm_smooth = pd.Series(minus_dm).rolling(window).sum().values
-                
-                plus_di = 100 * (plus_dm_smooth / np.where(tr_smooth == 0, 1e-9, tr_smooth))
-                minus_di = 100 * (minus_dm_smooth / np.where(tr_smooth == 0, 1e-9, tr_smooth))
-                
-                di_sum = plus_di + minus_di
-                di_diff = np.abs(plus_di - minus_di)
-                dx = 100 * (di_diff / np.where(di_sum == 0, 1e-9, di_sum))
-                
-                adx_series = pd.Series(dx).rolling(window).mean().values
-                current_adx = float(adx_series[-1]) if not np.isnan(adx_series[-1]) else 0.0
-            else:
-                current_adx = 0.0
-                
-            qty_flag = "🟢 " if current_adx > 20 else "🔴 "
-            
-            ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
-            if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
-            
-            ema_up = cmp > df['Close'].ewm(span=9).mean().iloc[-1]
-            if use_ema9: sigs.append("↑EMA" if ema_up else "↓EMA")
-            
-            if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
+        qty_flag = "🟢 " if current_adx > 20 else "🔴 "
+        
+        ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
+        if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
+        
+        ema_up = cmp > df['Close'].ewm(span=9).mean().iloc[-1]
+        if use_ema9: sigs.append("↑EMA" if ema_up else "↓EMA")
+        
+        if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
 
-            trade = st.session_state.active_trades.get(symbol)
-            status = "WAITING"
-            e_time = ist_now.strftime("%H:%M")
-            t_type = trade.get('type') if trade else None
-            
-            if trade:
-                status = "IN TRADE"
-                e_time = trade.get('time', e_time)
-                p_text = trade.get('prob_text', "MED")
-                if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
-                   (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
-                    del st.session_state.active_trades[symbol]
-                    save_persistent_trades(st.session_state.active_trades)
-            elif vol_surge:
+        # Memory Check
+        trade = st.session_state.dual_trades[strategy_key].get(symbol)
+        status = "WAITING"
+        e_time = ist_now.strftime("%H:%M")
+        t_type = trade.get('type') if trade else None
+        
+        if trade:
+            status = "IN TRADE"
+            e_time = trade.get('time', e_time)
+            p_text = trade.get('prob_text', "MED")
+            if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
+               (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
+                del st.session_state.dual_trades[strategy_key][symbol]
+                save_persistent_trades(st.session_state.dual_trades)
+        elif vol_surge:
+            if not is_reversed:
                 if cmp > c_open and lrc_dir == "UP":
-                    t_type = "SELL"
-                    status = "❄️ SELL"
+                    t_type, status = "BUY", "🔥 BUY"
                     prob_score += 1
                 elif cmp < c_open and lrc_dir == "DOWN":
-                    t_type = "BUY"
-                    status = "🔥 BUY"
+                    t_type, status = "SELL", "❄️ SELL"
                     prob_score += 1
-                else:
-                    t_type = None
-
-                if t_type:
-                    p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
-                    entry = cmp
-                    target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
-                    sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
-                    
-                    st.session_state.active_trades[symbol] = {
-                        'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
-                        'time': e_time, 'prob_text': p_text
-                    }
-                    save_persistent_trades(st.session_state.active_trades)
             else:
+                if cmp > c_open and lrc_dir == "UP":
+                    t_type, status = "SELL", "❄️ SELL"
+                    prob_score += 1
+                elif cmp < c_open and lrc_dir == "DOWN":
+                    t_type, status = "BUY", "🔥 BUY"
+                    prob_score += 1
+
+            if t_type:
                 p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
-
-            if p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up:
-                trade_cond = "S.Buy"
-            elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up:
-                trade_cond = "S.Sell"
-            else:
-                trade_cond = "-"
-
-            # --- STRICT ROC FILTERS ---
-            if roc_val >= 0 and roc_val < filter_roc_gt:
-                continue
-            if roc_val < 0 and roc_val > -filter_roc_lt:
-                continue
-
-            # --- TRADE TYPE SELECTION FILTER ---
-            if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy":
-                continue
-            if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell":
-                continue
-            if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]:
-                continue
-            if filter_trade_type == "Blank Only" and trade_cond != "-":
-                continue
-
-            # Pre-combine the flag and string to avoid KeyError lookup crashes later
-            formatted_qty = f"{qty_flag}{int(capital // cmp)}"
-
-            results.append({
-                "Stock": flag + symbol, 
-                "Trade": trade_flag + trade_cond, 
-                "Qty": formatted_qty, 
-                "CMP": cmp,
-                "Entry": trade['entry'] if trade else 0.0,
-                "SL": trade['sl'] if trade else 0.0,
-                "Target": trade['target'] if trade else 0.0,
-                "Signal": " | ".join(sigs), 
-                "Status": status, 
-                "Prob": p_text, 
-                "Time": e_time,
-                "InTrade": 1 if trade else 0, 
-                "ROC_Val": abs(roc_val),
-                "TradeType": t_type
-            })
-        return pd.DataFrame(results)
-    except: return pd.DataFrame()
-
-# --- RENDER ---
-df_raw = get_dashboard()
-
-if not df_raw.empty:
-    df_sorted = df_raw.sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
-    
-    target_order = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time", "TradeType"]
-    df_sorted = df_sorted[target_order]
-    
-    def apply_styles(df):
-        styles = pd.DataFrame('', index=df.index, columns=df.columns)
-        for i, row in df.iterrows():
-            if row['Status'] == "IN TRADE":
-                row_bg = '#c6f6d5' if row['TradeType'] == 'BUY' else '#fed7d7'
-                styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
+                entry = cmp
+                target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
+                sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
                 
-                if row['TradeType'] == 'BUY':
-                    cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
-                else:
-                    cmp_bg = '#1a8a44' if row['CMP'] <= row['Entry'] else '#c53030'
-                styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
-        return styles
+                st.session_state.dual_trades[strategy_key][symbol] = {
+                    'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
+                    'time': e_time, 'prob_text': p_text
+                }
+                save_persistent_trades(st.session_state.dual_trades)
+        else:
+            p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
-    styled_view = df_sorted.style.apply(apply_styles, axis=None).format({
-        "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
-        "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-",
-    })
+        # Scoreboard setups
+        if not is_reversed:
+            if p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Buy"
+            elif p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up: trade_cond = "S.Sell"
+            else: trade_cond = "-"
+        else:
+            if p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up: trade_cond = "S.Buy"
+            elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Sell"
+            else: trade_cond = "-"
 
-    # Display columns matching setup cleanly without spilling structural calculation layers
-    columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
+        # --- FILTERS ---
+        if roc_val >= 0 and roc_val < filter_roc_gt: continue
+        if roc_val < 0 and roc_val > -filter_roc_lt: continue
+
+        if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy": continue
+        if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell": continue
+        if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]: continue
+        if filter_trade_type == "Blank Only" and trade_cond != "-": continue
+
+        results.append({
+            "Stock": flag + symbol, "Trade": trade_flag + trade_cond, "Qty": f"{qty_flag}{int(capital // cmp)}", 
+            "CMP": cmp, "Entry": trade['entry'] if trade else 0.0, "SL": trade['sl'] if trade else 0.0,
+            "Target": trade['target'] if trade else 0.0, "Signal": " | ".join(sigs), "Status": status, 
+            "Prob": p_text, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val), "TradeType": t_type
+        })
     
-    with table_placeholder.container():
-        st.dataframe(styled_view, use_container_width=True, hide_index=True, column_order=columns_to_show)
-else:
-    st.info("🔄 Processing candle data matching filter parameters...")
+    if not results: return pd.DataFrame()
+    df_out = pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
+    return df_out[["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time", "TradeType"]]
 
+
+# --- EXECUTE FETCH ---
+tickers = [f"{s}.NS" for s in SYMBOLS]
+try:
+    raw_market_data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+except:
+    raw_market_data = {}
+
+def apply_dynamic_styles(df):
+    styles = pd.DataFrame('', index=df.index, columns=df.columns)
+    for i, row in df.iterrows():
+        if row['Status'] == "IN TRADE":
+            row_bg = '#c6f6d5' if row['TradeType'] == 'BUY' else '#fed7d7'
+            styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
+            
+            if row['TradeType'] == 'BUY':
+                cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
+            else:
+                cmp_bg = '#1a8a44' if row['CMP'] <= row['Entry'] else '#c53030'
+            styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
+    return styles
+
+columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
+
+# Process datasets
+df_reg = process_strategy(raw_market_data, is_reversed=False) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
+df_rev = process_strategy(raw_market_data, is_reversed=True) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
+
+
+# --- 🏢 CHANGED ELEMENT: 1) CONSOLIDATED TRADE WINDOW ---
+st.markdown("---")
+st.header("🪟 1) TRADE WINDOW")
+
+# Filter active records for Regular & Reversed
+active_reg = df_reg[(df_reg['Status'] == "IN TRADE") & ((df_reg['CMP'] > df_reg['Entry']) | (df_reg['CMP'] < df_reg['Entry']))] if not df_reg.empty else pd.DataFrame()
+active_rev = df_rev[(df_rev['Status'] == "IN TRADE") & ((df_rev['CMP'] > df_rev['Entry']) | (df_rev['CMP'] < df_rev['Entry']))] if not df_rev.empty else pd.DataFrame()
+
+# Merge matrices to eliminate duplication across displays
+if not active_reg.empty or not active_rev.empty:
+    combined_trades = pd.concat([active_reg, active_rev], ignore_index=True)
+    # Deduplicate keeping standard monitor preference to keep layout clean
+    combined_trades = combined_trades.drop_duplicates(subset=["Stock"], keep="first")
+    
+    view_trade_window = combined_trades.style.apply(apply_dynamic_styles, axis=None).format({
+        "CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}", "SL": "{:.2f}"
+    })
+    st.dataframe(view_trade_window, use_container_width=True, hide_index=True, column_order=columns_to_show)
+else:
+    st.info("No active open positions match conditions (CMP > Entry or CMP < Entry).")
+
+
+# --- RENDER SIDE-BY-SIDE PANELS ---
+st.markdown("---")
+col_reg, col_rev = st.columns(2)
+
+with col_reg:
+    st.subheader("📊 2) REGULAR MONITOR")
+    if not df_reg.empty:
+        view_reg = df_reg.style.apply(apply_dynamic_styles, axis=None).format({
+            "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
+            "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
+        })
+        st.dataframe(view_reg, use_container_width=True, hide_index=True, column_order=columns_to_show)
+    else:
+        st.caption("No tickers match standard filters right now.")
+
+with col_rev:
+    st.subheader("🔄 3) REVERSED MONITOR")
+    if not df_rev.empty:
+        view_rev = df_rev.style.apply(apply_dynamic_styles, axis=None).format({
+            "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
+            "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
+        })
+        st.dataframe(view_rev, use_container_width=True, hide_index=True, column_order=columns_to_show)
+    else:
+        st.caption("No tickers match reversal filters right now.")
+
+# --- REFRESH RATE ---
 time.sleep(60 if open_status else 300)
 st.rerun()
