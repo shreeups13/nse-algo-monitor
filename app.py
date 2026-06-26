@@ -1,4 +1,4 @@
-#G9.09.06.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW
+#G9.09.06.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW back test 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -54,6 +54,11 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
+    st.subheader("📊 Backtest Control Panel")
+    backtest_active = st.checkbox("Turn On Historical Backtest Engine", value=False)
+    backtest_days = st.slider("Backtest History Period (Days)", min_value=1, max_value=59, value=7)
+    
+    st.markdown("---")
     st.subheader("🎯 Custom Filters")
     filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.00, step=0.01, format="%.2f")
     filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.00, step=0.01, format="%.2f")
@@ -93,8 +98,79 @@ except:
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 
+# --- INTERNAL SIMULATION ENGINE FOR BACKTEST P&L COLUMN ---
+def compute_backtest_pnl_matrix(data, target_p, sl_p):
+    pnl_ledger = {"regular": {}, "reversed": {}}
+    sq_off = time(15, 15)
+    
+    for symbol in SYMBOLS:
+        t_str = f"{symbol}.NS"
+        if t_str not in data or data[t_str].empty: continue
+        df = data[t_str].dropna()
+        if len(df) < 20: continue
+        
+        df_copy = df.copy()
+        df_copy['Vol_Avg'] = df_copy['Volume'].rolling(10).mean()
+        
+        reg_pnl, rev_pnl = 0.0, 0.0
+        
+        for idx in range(20, len(df_copy)):
+            current_candle = df_copy.iloc[idx]
+            past_candles = df_copy.iloc[:idx+1]
+            trade_datetime = df_copy.index[idx]
+            
+            if trade_datetime.time() >= sq_off: continue
+            if not (current_candle['Volume'] > (current_candle['Vol_Avg'] * 1.2)): continue
+            
+            cmp, c_open = float(current_candle['Close']), float(current_candle['Open'])
+            y = past_candles['Close'].tail(14).values
+            slope, _ = np.polyfit(np.arange(len(y)), y, 1)
+            lrc_dir = "UP" if slope > 0 else "DOWN"
+            
+            for strategy_mode in ['Regular', 'Reversed']:
+                trade_type = None
+                if strategy_mode == 'Regular':
+                    if cmp > c_open and lrc_dir == "UP": trade_type = "BUY"
+                    elif cmp < c_open and lrc_dir == "DOWN": trade_type = "SELL"
+                else:
+                    if cmp > c_open and lrc_dir == "UP": trade_type = "SELL"
+                    elif cmp < c_open and lrc_dir == "DOWN": trade_type = "BUY"
+                
+                if not trade_type: continue
+                qty = int(capital // cmp)
+                if qty == 0: continue
+                
+                target_price = cmp * (1 + target_p) if trade_type == "BUY" else cmp * (1 - target_p)
+                sl_price = cmp * (1 - sl_p) if trade_type == "BUY" else cmp * (1 + sl_p)
+                exit_price = cmp
+                
+                for scan_idx in range(idx + 1, len(df_copy)):
+                    future_candle = df_copy.iloc[scan_idx]
+                    future_time = df_copy.index[scan_idx]
+                    
+                    if future_time.date() == trade_datetime.date() and future_time.time() >= sq_off:
+                        exit_price = float(future_candle['Close']); break
+                    if future_time.date() != trade_datetime.date():
+                        exit_price = float(df_copy.iloc[scan_idx-1]['Close']); break
+                    
+                    if trade_type == "BUY":
+                        if future_candle['High'] >= target_price: exit_price = target_price; break
+                        elif future_candle['Low'] <= sl_price: exit_price = sl_price; break
+                    else:
+                        if future_candle['Low'] <= target_price: exit_price = target_price; break
+                        elif future_candle['High'] >= sl_price: exit_price = sl_price; break
+                
+                pnl_calc = (exit_price - cmp) * qty if trade_type == "BUY" else (cmp - exit_price) * qty
+                if strategy_mode == 'Regular': reg_pnl += pnl_calc
+                else: rev_pnl += pnl_calc
+                
+        pnl_ledger["regular"][symbol] = round(reg_pnl, 2)
+        pnl_ledger["reversed"][symbol] = round(rev_pnl, 2)
+        
+    return pnl_ledger
+
 # --- CALCULATION LOGIC CORE ---
-def process_strategy(data, is_reversed=False):
+def process_strategy(data, is_reversed=False, historical_ledger=None):
     results = []
     strategy_key = "reversed" if is_reversed else "regular"
     
@@ -234,24 +310,38 @@ def process_strategy(data, is_reversed=False):
         if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]: continue
         if filter_trade_type == "Blank Only" and trade_cond != "-": continue
 
+        # Attach Backtest metric value based on active configuration
+        bt_val = "-"
+        if historical_ledger and symbol in historical_ledger[strategy_key]:
+            val_stat = historical_ledger[strategy_key][symbol]
+            bt_val = f"₹{val_stat:+.2f}" if val_stat != 0.0 else "₹0.00"
+
         results.append({
             "Stock": flag + symbol, "Trade": trade_flag + trade_cond, "Qty": f"{qty_flag}{int(capital // cmp)}", 
             "CMP": cmp, "Entry": trade['entry'] if trade else 0.0, "SL": trade['sl'] if trade else 0.0,
             "Target": trade['target'] if trade else 0.0, "Signal": " | ".join(sigs), "Status": status, 
-            "Prob": p_text, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val), "TradeType": t_type
+            "Prob": p_text, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val), "TradeType": t_type,
+            "Backtest P&L": bt_val
         })
     
     if not results: return pd.DataFrame()
     df_out = pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
-    return df_out[["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time", "TradeType"]]
+    return df_out[["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time", "TradeType", "Backtest P&L"]]
 
 
 # --- EXECUTE FETCH ---
 tickers = [f"{s}.NS" for s in SYMBOLS]
+data_window_period = f"{backtest_days}d" if backtest_active else "7d"
+
 try:
-    raw_market_data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+    raw_market_data = yf.download(tickers, period=data_window_period, interval='5m', group_by='ticker', auto_adjust=True, progress=False)
 except:
     raw_market_data = {}
+
+# Compute historical context calculations if turned on
+active_pnl_ledger = None
+if backtest_active and not isinstance(raw_market_data, dict) and not raw_market_data.empty:
+    active_pnl_ledger = compute_backtest_pnl_matrix(raw_market_data, target_pct, sl_pct)
 
 def apply_dynamic_styles(df):
     styles = pd.DataFrame('', index=df.index, columns=df.columns)
@@ -267,11 +357,11 @@ def apply_dynamic_styles(df):
             styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
     return styles
 
-columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
+columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time", "Backtest P&L"]
 
 # Process datasets
-df_reg = process_strategy(raw_market_data, is_reversed=False) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
-df_rev = process_strategy(raw_market_data, is_reversed=True) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
+df_reg = process_strategy(raw_market_data, is_reversed=False, historical_ledger=active_pnl_ledger) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
+df_rev = process_strategy(raw_market_data, is_reversed=True, historical_ledger=active_pnl_ledger) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
 
 
 # --- 🏢 CHANGED ELEMENT: 1) CONSOLIDATED TRADE WINDOW ---
