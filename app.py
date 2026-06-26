@@ -3,8 +3,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import datetime  # Imported cleanly to protect against object clashes
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, time as dt_time  # Explicitly aliased to avoid conflicts
 import time
 import json
 import os
@@ -102,7 +101,7 @@ st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 # --- INTERNAL SIMULATION ENGINE FOR BACKTEST P&L COLUMN ---
 def compute_backtest_pnl_matrix(data, target_p, sl_p):
     pnl_ledger = {"regular": {}, "reversed": {}}
-    sq_off = datetime.time(15, 15) # Fixed object reference mismatch
+    sq_off = dt_time(15, 15)  # Clean execution via unique alias name
     
     for symbol in SYMBOLS:
         t_str = f"{symbol}.NS"
