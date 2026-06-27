@@ -1,4 +1,4 @@
-#G9.09.06.26_SUPERSONIC_LIVE_WEAPONS_TERMINAL
+#G9.09.06.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -8,50 +8,22 @@ import time
 import json
 import os
 
-# --- SYSTEM INITIALIZATION ---
-st.set_page_config(page_title="AESA Live Weapons Terminal v6.0", layout="wide", page_icon="⚡")
+# --- CONFIGURATION ---
+st.set_page_config(page_title="NSE Pro Monitor v4.7 (Dual Mode)", layout="wide", page_icon="📈")
 
-MISSILE_BAY_FILE = "live_weapons_bay.json"
-ORDER_LOG_FILE = "broker_order_logs.json"
+TRADES_FILE = "trade_history_dual.json"
 
-def load_json_vault(filepath, default_structure):
-    if os.path.exists(filepath):
+def load_persistent_trades():
+    if os.path.exists(TRADES_FILE):
         try:
-            with open(filepath, "r") as f: return json.load(f)
-        except: return default_structure
-    return default_structure
+            with open(TRADES_FILE, "r") as f: return json.load(f)
+        except: return {"regular": {}, "reversed": {}}
+    return {"regular": {}, "reversed": {}}
 
-def save_json_vault(filepath, data):
-    with open(filepath, "w") as f: json.dump(data, f)
+def save_persistent_trades(trades):
+    with open(TRADES_FILE, "w") as f: json.dump(trades, f)
 
-# --- SIMULATED LIVE BROKER EXCHANGE API INTERCEPT ---
-def execute_broker_order(symbol, action, quantity, price, protocol):
-    """
-    Simulates production order routing via a broker gateway API (e.g., Zerodha, AngelOne, Fyers).
-    In live deployment, replace this module with actual broker client execution wrappers.
-    """
-    timestamp = get_ist().strftime("%Y-%m-%d %H:%M:%S")
-    order_id = f"ORD-{int(time.time())}-{np.random.randint(1000, 9999)}"
-    
-    order_payload = {
-        "OrderID": order_id,
-        "Timestamp": timestamp,
-        "Vector": symbol,
-        "Action": action,  # BUY, SELL
-        "Qty": quantity,
-        "ExecutionPrice": round(price, 2),
-        "ProductType": "MISC / INTRADAY",
-        "Protocol": protocol,
-        "Status": "COMPLETE"
-    }
-    
-    # Append log event to persistent JSON cache
-    logs = load_json_vault(ORDER_LOG_FILE, [])
-    logs.append(order_payload)
-    save_json_vault(ORDER_LOG_FILE, logs)
-    return order_payload
-
-# --- TACTICAL CLOCK & CALENDAR ---
+# --- MARKET CALENDAR 2026 ---
 NSE_HOLIDAYS = [
     date(2026, 1, 26), date(2026, 3, 3), date(2026, 3, 26), date(2026, 3, 31),
     date(2026, 4, 3), date(2026, 4, 14), date(2026, 5, 1), date(2026, 5, 28),
@@ -62,259 +34,294 @@ NSE_HOLIDAYS = [
 def get_ist():
     return datetime.now() + timedelta(hours=5, minutes=30)
 
-def query_radar_status():
+def is_market_open():
     now = get_ist()
     if now.weekday() >= 5 or now.date() in NSE_HOLIDAYS:
-        return False, "📡 RADAR STANDBY (MARKET CLOSED)"
+        return False, "🔴 MARKET CLOSED (WEEKEND/HOLIDAY)"
     start_time, end_time = now.replace(hour=9, minute=15, second=0), now.replace(hour=15, minute=30, second=0)
-    if start_time <= now <= end_time: return True, "🚀 LIVE WEAPONS READY (MARKET LIVE)"
-    return False, "📡 RADAR STANDBY (OUT OF OPERATIONS)"
+    if start_time <= now <= end_time: return True, "🟢 MARKET LIVE"
+    return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
 
-if 'supersonic_bay' not in st.session_state:
-    st.session_state.supersonic_bay = load_json_vault(MISSILE_BAY_FILE, {"ACTIVE_LOCKS": {}})
+# --- INITIALIZE STATE FOR BOTH STRATEGIES ---
+if 'dual_trades' not in st.session_state:
+    st.session_state.dual_trades = load_persistent_trades()
 
-if 'combat_stats' not in st.session_state:
-    st.session_state.combat_stats = {"Kills": 0, "Ejections": 0}
-
-# --- AVIONICS FLIGHT PANEL (SIDEBAR) ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("🕹️ Flight & Weapons Deck")
-    combat_capital = st.number_input("Payload Capital Allocation (₹)", min_value=1000, value=50000, step=5000)
+    st.header("⚙️ General Settings")
+    capital = st.number_input("Capital (₹)", min_value=1000, value=20000, step=1000)
+    target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
+    sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
-    st.subheader("🎯 Target Homing Scaling (ATR)")
-    atr_target_mult = st.slider("Target Yield (ATR x)", 1.5, 5.0, 3.0, step=0.1)
-    atr_sl_mult = st.slider("Safety Stop Range (ATR x)", 0.5, 2.5, 1.0, step=0.1)
+    st.subheader("🎯 Custom Filters")
+    filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.00, step=0.01, format="%.2f")
+    filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.00, step=0.01, format="%.2f")
+    filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
     
     st.markdown("---")
-    st.subheader("📡 Radar Noise Gate")
-    min_roc = st.number_input("Min Velocity (ROC %)", value=0.75, step=0.05, format="%.2f")
-    min_adx = st.slider("Min Trend Engine (ADX)", 10, 50, 22)
+    st.subheader("🛠️ Indicators")
+    use_ma20 = st.checkbox("MA (20)", value=True)
+    use_ema9 = st.checkbox("EMA (9)", value=True)
+    use_sma50 = st.checkbox("SMA (50)", value=False)
+    use_roc = st.checkbox("ROC (5)", value=True)
+    use_lrc = st.checkbox("LRC Trend", value=True)
     
     st.markdown("---")
-    raw_watchlist = "UPL, COALINDIA, POWERGRID, ITC, NCC, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, BIOCON, IRFC, JSWENERGY, RELIANCE, INFY, IOC, ADANIPORTS, TATAPOWER"
-    user_input = st.text_area("Airspace Grid Targets (Watchlist)", raw_watchlist)
+    full_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
+    user_input = st.text_area("Watchlist", full_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
-    if st.button("🚨 EMERGENCY RESET & WIPE ALL ORDERS"):
-        st.session_state.supersonic_bay = {"ACTIVE_LOCKS": {}}
-        st.session_state.combat_stats = {"Kills": 0, "Ejections": 0}
-        if os.path.exists(MISSILE_BAY_FILE): os.remove(MISSILE_BAY_FILE)
-        if os.path.exists(ORDER_LOG_FILE): os.remove(ORDER_LOG_FILE)
+    if st.button("🗑️ Reset All Trades (Both Layouts)"):
+        st.session_state.dual_trades = {"regular": {}, "reversed": {}}
+        if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
-# --- HUD METRIC RIBBON ---
+# --- HEADER (INDICES) ---
 ist_now = get_ist()
-radar_active, radar_status_text = query_radar_status()
+open_status, status_text = is_market_open()
 
-m_col1, m_col2, m_col3 = st.columns(3)
-with m_col1: st.metric(label="System Status Grid", value=radar_status_text)
-with m_col2: st.metric(label="🎯 System Direct Kills", value=f"{st.session_state.combat_stats['Kills']} Trades Hit")
-with m_col3: st.metric(label="🚨 Emergency Ejections", value=f"{st.session_state.combat_stats['Ejections']} Losses")
+try:
+    indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)['Close']
+    n_curr, n_prev = indices["^NSEI"].dropna().iloc[-1], indices["^NSEI"].dropna().iloc[0]
+    s_curr, s_prev = indices["^BSESN"].dropna().iloc[-1], indices["^BSESN"].dropna().iloc[0]
+    n_chg = ((n_curr - n_prev) / n_prev) * 100
+    s_chg = ((s_curr - s_prev) / s_prev) * 100
+    st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
+except:
+    st.markdown("### Indices: `Connecting...`")
 
-# --- AIRSPACE PROCESSING & AUTOMATED WEAPONS LOGIC ---
-def process_live_weapons_radar(data):
-    scanned_vectors = []
-    active_locks = st.session_state.supersonic_bay["ACTIVE_LOCKS"]
+st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
+
+# --- CALCULATION LOGIC CORE ---
+def process_strategy(data, is_reversed=False):
+    results = []
+    strategy_key = "reversed" if is_reversed else "regular"
     
     for symbol in SYMBOLS:
         t_str = f"{symbol}.NS"
         if t_str not in data or data[t_str].empty: continue
         df = data[t_str].dropna()
-        if len(df) < 25: continue
+        if len(df) < 20: continue
 
         cmp = float(df['Close'].iloc[-1])
         c_open = float(df['Open'].iloc[-1])
         
-        # 1. Math Tracking Filters (ATR, ROC, Vol Surge, ADX)
-        high_arr, low_arr, close_arr = df['High'].values, df['Low'].values, df['Close'].values
-        prev_close_arr = df['Close'].shift(1).values
-        tr = np.nanmax(np.vstack([high_arr - low_arr, np.abs(high_arr - prev_close_arr), np.abs(low_arr - prev_close_arr)]), axis=0)
-        df['ATR'] = pd.Series(tr).rolling(14).mean().values
-        atr_val = float(df['ATR'].iloc[-1])
+        sigs = []
+        prob_score = 0
+        p_text = "LOW"
         
-        if atr_val <= 0: continue
-
+        # ROC Calculation
         p5 = df['Close'].iloc[-6]
         roc_val = ((cmp - p5) / p5) * 100
-        thermal_spike = df['Volume'].iloc[-1] > (df['Volume'].rolling(10).mean().iloc[-1] * 1.3)
-
-        y = df['Close'].tail(14).values
-        slope, _ = np.polyfit(np.arange(len(y)), y, 1)
-        trajectory = "CLIMBING" if slope > 0 else "DIVING"
+        if abs(roc_val) > 0.5: prob_score += 1
+        if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
         
-        up_move = high_arr - df['High'].shift(1).values
-        down_move = df['Low'].shift(1).values - low_arr
+        flag = "🟢 " if 1.0 <= abs(roc_val) <= 5.0 else "🔴 "
+        
+        # Volume Surge Calculation
+        vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
+        vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
+        if vol_surge: prob_score += 1
+
+        # LRC Trend Line Properties
+        y = df['Close'].tail(14).values
+        slope, intercept = np.polyfit(np.arange(len(y)), y, 1)
+        lrc_dir = "UP" if slope > 0 else "DOWN"
+        if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
+        
+        avg_price = np.mean(y)
+        lrc2 = (slope * (len(y) - 1)) + intercept
+        
+        if is_reversed:
+            trade_flag = "🟢 " if lrc2 < avg_price else "🔴 "
+        else:
+            trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
+        
+        # ADX Calculation Block
+        high, low, close = df['High'].values, df['Low'].values, df['Close'].values
+        prev_high, prev_low, prev_close = df['High'].shift(1).values, df['Low'].shift(1).values, df['Close'].shift(1).values
+        
+        tr = np.nanmax(np.vstack([high - low, np.abs(high - prev_close), np.abs(low - prev_close)]), axis=0)
+        up_move = high - prev_high
+        down_move = prev_low - low
+        
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-        tr_s = pd.Series(tr).rolling(14).sum().values
-        p_di = 100 * (pd.Series(plus_dm).rolling(14).sum().values / np.where(tr_s == 0, 1e-9, tr_s))
-        m_di = 100 * (pd.Series(minus_dm).rolling(14).sum().values / np.where(tr_s == 0, 1e-9, tr_s))
-        adx = float(pd.Series(100 * (np.abs(p_di - m_di) / np.where((p_di + m_di) == 0, 1e-9, (p_di + m_di)))).rolling(14).mean().values[-1])
-
-        # --- TERMINAL EXECUTION TRACKING ---
-        is_locked = symbol in active_locks
-        guidance_state = "HOLDING PATTERN"
-        fire_protocol = None
-        progress_pct = 0.0
         
-        if is_locked:
-            lock_data = active_locks[symbol]
-            fire_protocol = lock_data['protocol']
-            entry_price = lock_data['intercept_alt']
-            target_price = lock_data['kill_zone']
-            current_sl = lock_data['adaptive_ejection']
-            qty = lock_data['payload']
+        window = 14
+        if len(df) >= window + 2:
+            tr_s = pd.Series(tr).rolling(window).sum().values
+            p_dm_s = pd.Series(plus_dm).rolling(window).sum().values
+            m_dm_s = pd.Series(minus_dm).rolling(window).sum().values
             
-            total_path = abs(target_price - entry_price)
-            distance_covered = (cmp - entry_price) if fire_protocol == "INTERCEPT" else (entry_price - cmp)
-            progress_pct = max(0.0, (distance_covered / total_path) * 100) if total_path > 0 else 0.0
-            
-            # Auto-Correction trailing calculation (70% threshold)
-            if progress_pct >= 70.0 and not lock_data.get('terminal_lock_activated', False):
-                current_sl = entry_price + (atr_val * 0.2) if fire_protocol == "INTERCEPT" else entry_price - (atr_val * 0.2)
-                st.session_state.supersonic_bay["ACTIVE_LOCKS"][symbol]['adaptive_ejection'] = current_sl
-                st.session_state.supersonic_bay["ACTIVE_LOCKS"][symbol]['terminal_lock_activated'] = True
-                save_json_vault(MISSILE_BAY_FILE, st.session_state.supersonic_bay)
-
-            guidance_state = "🎯 TERMINAL LOCK" if lock_data.get('terminal_lock_activated', False) else "🚀 MID-COURSE GUIDANCE"
-
-            # BOUNDARY PENETRATION CHECKERS -> ROUTE LIVE ORDERS
-            if fire_protocol == "INTERCEPT":
-                if cmp >= target_price:
-                    execute_broker_order(symbol, "SELL (CLOSE INTERCEPT)", qty, cmp, fire_protocol)
-                    st.session_state.combat_stats["Kills"] += 1
-                    del st.session_state.supersonic_bay["ACTIVE_LOCKS"][symbol]
-                    st.toast(f"💥 IMPACT! Target Profit Hit. Dispatched Broker SELL order for {symbol}.", icon="🎯")
-                    save_json_vault(MISSILE_BAY_FILE, st.session_state.supersonic_bay)
-                    continue
-                elif cmp <= current_sl:
-                    execute_broker_order(symbol, "SELL (EMERGENCY EJECT)", qty, cmp, fire_protocol)
-                    st.session_state.combat_stats["Ejections"] += 1
-                    del st.session_state.supersonic_bay["ACTIVE_LOCKS"][symbol]
-                    st.toast(f"🚨 EJECTED! Stop Loss Broken. Sent Defensive Exit Order for {symbol}.", icon="🔥")
-                    save_json_vault(MISSILE_BAY_FILE, st.session_state.supersonic_bay)
-                    continue
-            elif fire_protocol == "BOMBER":
-                if cmp <= target_price:
-                    execute_broker_order(symbol, "BUY (COVER SHORT)", qty, cmp, fire_protocol)
-                    st.session_state.combat_stats["Kills"] += 1
-                    del st.session_state.supersonic_bay["ACTIVE_LOCKS"][symbol]
-                    st.toast(f"💥 IMPACT! Short Target Cleared. Dispatched Broker Buy-Back order for {symbol}.", icon="🎯")
-                    save_json_vault(MISSILE_BAY_FILE, st.session_state.supersonic_bay)
-                    continue
-                elif cmp >= current_sl:
-                    execute_broker_order(symbol, "BUY (COVER EMERGENCY EJECT)", qty, cmp, fire_protocol)
-                    st.session_state.combat_stats["Ejections"] += 1
-                    del st.session_state.supersonic_bay["ACTIVE_LOCKS"][symbol]
-                    st.toast(f"🚨 EJECTED! Short Trajectory Compromised. Covered position on {symbol}.", icon="🔥")
-                    save_json_vault(MISSILE_BAY_FILE, st.session_state.supersonic_bay)
-                    continue
+            p_di = 100 * (p_dm_s / np.where(tr_s == 0, 1e-9, tr_s))
+            m_di = 100 * (m_dm_s / np.where(tr_s == 0, 1e-9, tr_s))
+            current_adx = float(pd.Series(100 * (np.abs(p_di - m_di) / np.where((p_di + m_di) == 0, 1e-9, (p_di + m_di)))).rolling(window).mean().values[-1])
         else:
-            # NO ACTIVE LOCK -> SWEEP AIRSPACE FOR STRATEGY BREAKOUT CONSTRAINTS
-            if thermal_spike and adx >= min_adx and abs(roc_val) >= min_roc:
-                if cmp > c_open and trajectory == "CLIMBING":
-                    fire_protocol = "INTERCEPT"
-                elif cmp < c_open and trajectory == "DIVING":
-                    fire_protocol = "BOMBER"
+            current_adx = 0.0
+            
+        qty_flag = "🟢 " if current_adx > 20 else "🔴 "
+        
+        ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
+        if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
+        
+        ema_up = cmp > df['Close'].ewm(span=9).mean().iloc[-1]
+        if use_ema9: sigs.append("↑EMA" if ema_up else "↓EMA")
+        
+        if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
 
-            if fire_protocol:
-                payload_qty = int(combat_capital // cmp)
-                kill_zone = cmp + (atr_val * atr_target_mult) if fire_protocol == "INTERCEPT" else cmp - (atr_val * atr_target_mult)
-                adaptive_ejection = cmp - (atr_val * atr_sl_mult) if fire_protocol == "INTERCEPT" else cmp + (atr_val * atr_sl_mult)
+        # Memory Check
+        trade = st.session_state.dual_trades[strategy_key].get(symbol)
+        status = "WAITING"
+        e_time = ist_now.strftime("%H:%M")
+        t_type = trade.get('type') if trade else None
+        
+        if trade:
+            status = "IN TRADE"
+            e_time = trade.get('time', e_time)
+            p_text = trade.get('prob_text', "MED")
+            if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
+               (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
+                del st.session_state.dual_trades[strategy_key][symbol]
+                save_persistent_trades(st.session_state.dual_trades)
+        elif vol_surge:
+            if not is_reversed:
+                if cmp > c_open and lrc_dir == "UP":
+                    t_type, status = "BUY", "🔥 BUY"
+                    prob_score += 1
+                elif cmp < c_open and lrc_dir == "DOWN":
+                    t_type, status = "SELL", "❄️ SELL"
+                    prob_score += 1
+            else:
+                if cmp > c_open and lrc_dir == "UP":
+                    t_type, status = "SELL", "❄️ SELL"
+                    prob_score += 1
+                elif cmp < c_open and lrc_dir == "DOWN":
+                    t_type, status = "BUY", "🔥 BUY"
+                    prob_score += 1
+
+            if t_type:
+                p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
+                entry = cmp
+                target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
+                sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
                 
-                # ROUTE ENTRY EXCHANGES ROUTINE
-                broker_action = "BUY (LAUNCH INTERCEPT)" if fire_protocol == "INTERCEPT" else "SELL (LAUNCH BOMBER SHORT)"
-                execute_broker_order(symbol, broker_action, payload_qty, cmp, fire_protocol)
-                
-                st.session_state.supersonic_bay["ACTIVE_LOCKS"][symbol] = {
-                    'intercept_alt': cmp, 'kill_zone': kill_zone, 'adaptive_ejection': adaptive_ejection,
-                    'protocol': fire_protocol, 'payload': payload_qty, 'lock_time': ist_now.strftime("%H:%M:%S"),
-                    'terminal_lock_activated': False
+                st.session_state.dual_trades[strategy_key][symbol] = {
+                    'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
+                    'time': e_time, 'prob_text': p_text
                 }
-                save_json_vault(MISSILE_BAY_FILE, st.session_state.supersonic_bay)
-                st.toast(f"🚀 LIVE ORDER DISPATCHED: Locked target coordinates on {symbol}!", icon="🦅")
-                is_locked = True
-                guidance_state = "🚀 MID-COURSE GUIDANCE"
+                save_persistent_trades(st.session_state.dual_trades)
+        else:
+            p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
-        scanned_vectors.append({
-            "Target Vector": ("⚡ " if is_locked else "📡 ") + symbol,
-            "Guidance State": guidance_state,
-            "Payload": active_locks[symbol]['payload'] if is_locked else int(combat_capital // cmp),
-            "Last Alt (CMP)": cmp,
-            "Intercept Alt": active_locks[symbol]['intercept_alt'] if is_locked else 0.0,
-            "Adaptive Ejection (SL)": active_locks[symbol]['adaptive_ejection'] if is_locked else 0.0,
-            "Kill Zone (Target)": active_locks[symbol]['kill_zone'] if is_locked else 0.0,
-            "Airspace Noise (ATR)": atr_val,
-            "Velocity (ROC)": f"{roc_val:+.2f}%",
-            "Progress": f"{progress_pct:.1f}%" if is_locked else "-",
-            "Protocol": fire_protocol if fire_protocol else "SCANNING",
-            "InFlight": 1 if is_locked else 0
+        # Scoreboard setups
+        if not is_reversed:
+            if p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Buy"
+            elif p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up: trade_cond = "S.Sell"
+            else: trade_cond = "-"
+        else:
+            if p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up: trade_cond = "S.Buy"
+            elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Sell"
+            else: trade_cond = "-"
+
+        # --- FILTERS ---
+        if roc_val >= 0 and roc_val < filter_roc_gt: continue
+        if roc_val < 0 and roc_val > -filter_roc_lt: continue
+
+        if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy": continue
+        if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell": continue
+        if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]: continue
+        if filter_trade_type == "Blank Only" and trade_cond != "-": continue
+
+        results.append({
+            "Stock": flag + symbol, "Trade": trade_flag + trade_cond, "Qty": f"{qty_flag}{int(capital // cmp)}", 
+            "CMP": cmp, "Entry": trade['entry'] if trade else 0.0, "SL": trade['sl'] if trade else 0.0,
+            "Target": trade['target'] if trade else 0.0, "Signal": " | ".join(sigs), "Status": status, 
+            "Prob": p_text, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val), "TradeType": t_type
         })
+    
+    if not results: return pd.DataFrame()
+    df_out = pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
+    return df_out[["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time", "TradeType"]]
 
-    if not scanned_vectors: return pd.DataFrame()
-    return pd.DataFrame(scanned_vectors).sort_values(by=["InFlight", "Airspace Noise (ATR)"], ascending=False)
 
-# --- EXECUTE RADAR DATA FEED HARVEST ---
+# --- EXECUTE FETCH ---
 tickers = [f"{s}.NS" for s in SYMBOLS]
 try:
-    airspace_feed = yf.download(tickers, period='5d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+    raw_market_data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
 except:
-    airspace_feed = {}
+    raw_market_data = {}
 
-df_radar = process_live_weapons_radar(airspace_feed) if not isinstance(airspace_feed, dict) and not airspace_feed.empty else pd.DataFrame()
-
-# --- DISPLAY UI BAY INTERFACES ---
-def render_hud_glowing_matrix(df):
+def apply_dynamic_styles(df):
     styles = pd.DataFrame('', index=df.index, columns=df.columns)
-    for idx, row in df.iterrows():
-        if "MID-COURSE" in str(row['Guidance State']):
-            styles.loc[idx, :] = 'background-color: #12223a; color: #cbd5e1;'
-        elif "TERMINAL LOCK" in str(row['Guidance State']):
-            bg = '#062d1a' if row['Protocol'] == 'INTERCEPT' else '#451010'
-            styles.loc[idx, :] = f'background-color: {bg}; color: #ffffff; font-weight: bold; border: 1px solid #38bdf8;'
+    for i, row in df.iterrows():
+        if row['Status'] == "IN TRADE":
+            row_bg = '#c6f6d5' if row['TradeType'] == 'BUY' else '#fed7d7'
+            styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
+            
+            if row['TradeType'] == 'BUY':
+                cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
+            else:
+                cmp_bg = '#1a8a44' if row['CMP'] <= row['Entry'] else '#c53030'
+            styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
     return styles
 
-st.markdown("---")
-st.header("🪟 ACTIVE WEAPONS COCKPIT BAY (LOCKED POSITIONS)")
+columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
 
-if not df_radar.empty:
-    active_tracking = df_radar[df_radar['InFlight'] == 1].drop(columns=["InFlight"])
-    if not active_tracking.empty:
-        st.dataframe(
-            active_tracking.style.apply(render_hud_glowing_matrix, axis=None).format({
-                "Last Alt (CMP)": "₹{:.2f}", "Intercept Alt": "₹{:.2f}", "Adaptive Ejection (SL)": "₹{:.2f}", "Kill Zone (Target)": "₹{:.2f}", "Airspace Noise (ATR)": "{:.2f}"
-            }), use_container_width=True, hide_index=True
-        )
+# Process datasets
+df_reg = process_strategy(raw_market_data, is_reversed=False) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
+df_rev = process_strategy(raw_market_data, is_reversed=True) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
+
+
+# --- 🏢 CHANGED ELEMENT: 1) CONSOLIDATED TRADE WINDOW ---
+st.markdown("---")
+st.header("🪟 1) TRADE WINDOW")
+
+# Filter active records for Regular & Reversed
+active_reg = df_reg[(df_reg['Status'] == "IN TRADE") & ((df_reg['CMP'] > df_reg['Entry']) | (df_reg['CMP'] < df_reg['Entry']))] if not df_reg.empty else pd.DataFrame()
+active_rev = df_rev[(df_rev['Status'] == "IN TRADE") & ((df_rev['CMP'] > df_rev['Entry']) | (df_rev['CMP'] < df_rev['Entry']))] if not df_rev.empty else pd.DataFrame()
+
+# Merge matrices to eliminate duplication across displays
+if not active_reg.empty or not active_rev.empty:
+    combined_trades = pd.concat([active_reg, active_rev], ignore_index=True)
+    # Deduplicate keeping standard monitor preference to keep layout clean
+    combined_trades = combined_trades.drop_duplicates(subset=["Stock"], keep="first")
+    
+    view_trade_window = combined_trades.style.apply(apply_dynamic_styles, axis=None).format({
+        "CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}", "SL": "{:.2f}"
+    })
+    st.dataframe(view_trade_window, use_container_width=True, hide_index=True, column_order=columns_to_show)
+else:
+    st.info("No active open positions match conditions (CMP > Entry or CMP < Entry).")
+
+
+# --- RENDER SIDE-BY-SIDE PANELS ---
+st.markdown("---")
+col_reg, col_rev = st.columns(2)
+
+with col_reg:
+    st.subheader("📊 2) REGULAR MONITOR")
+    if not df_reg.empty:
+        view_reg = df_reg.style.apply(apply_dynamic_styles, axis=None).format({
+            "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
+            "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
+        })
+        st.dataframe(view_reg, use_container_width=True, hide_index=True, column_order=columns_to_show)
     else:
-        st.info("Airspace clear. No active positions locked to the exchange registry.")
-else:
-    st.info("System disconnected or radar array configuration unmapped.")
+        st.caption("No tickers match standard filters right now.")
 
-st.markdown("---")
-st.subheader("🖥️ TOTAL AIRSPACE OPERATIONS GRID (AESA RADAR)")
-if not df_radar.empty:
-    full_grid = df_radar.drop(columns=["InFlight"])
-    st.dataframe(
-        full_grid.style.format({
-            "Last Alt (CMP)": "₹{:.2f}", 
-            "Intercept Alt": lambda x: f"₹{x:.2f}" if x > 0 else "-",
-            "Adaptive Ejection (SL)": lambda x: f"₹{x:.2f}" if x > 0 else "-", 
-            "Kill Zone (Target)": lambda x: f"₹{x:.2f}" if x > 0 else "-",
-            "Airspace Noise (ATR)": "{:.2f}"
-        }), use_container_width=True, hide_index=True
-    )
+with col_rev:
+    st.subheader("🔄 3) REVERSED MONITOR")
+    if not df_rev.empty:
+        view_rev = df_rev.style.apply(apply_dynamic_styles, axis=None).format({
+            "CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-",
+            "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"
+        })
+        st.dataframe(view_rev, use_container_width=True, hide_index=True, column_order=columns_to_show)
+    else:
+        st.caption("No tickers match reversal filters right now.")
 
-# --- NEW EXTENSION: LIVE ORDER SYSTEM LOGS HUD ---
-st.markdown("---")
-st.header("📋 COMBAT ENGAGEMENT ORDER LOGS (EXCHANGE HISTORY)")
-live_logs = load_json_vault(ORDER_LOG_FILE, [])
-if live_logs:
-    df_logs = pd.DataFrame(live_logs).sort_index(ascending=False)
-    st.dataframe(df_logs, use_container_width=True, hide_index=True)
-else:
-    st.caption("No orders dispatched over the broker gateway network for this session yet.")
-
-# --- AUTO CYCLE RE-RUN FLIGHT METRICS ---
-time.sleep(60 if radar_active else 300)
+# --- REFRESH RATE ---
+time.sleep(60 if open_status else 300)
 st.rerun()
