@@ -1,4 +1,4 @@
-#ROC G9.09.06.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW
+#G9.09.06.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -54,15 +54,9 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
-    st.subheader("🎯 Dynamic ROC Entry Filters")
-    entry_roc_gt = st.number_input("Entry ROC > % (Positive Moves)", value=1.36, step=0.01, format="%.2f")
-    entry_roc_lt = st.number_input("Entry ROC < % (Negative Moves)", value=1.36, step=0.01, format="%.2f")
-    
-    st.subheader("🚪 Dynamic ROC Exit Filters")
-    exit_roc_gt = st.number_input("Exit ROC Drop > % (For Longs)", value=0.50, step=0.01, format="%.2f", help="Triggers exit if momentum drops below this value for buy positions")
-    exit_roc_lt = st.number_input("Exit ROC Rise < % (For Shorts)", value=0.50, step=0.01, format="%.2f", help="Triggers exit if momentum rises above this value for sell positions")
-    
-    st.markdown("---")
+    st.subheader("🎯 Custom Filters")
+    filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.36, step=0.01, format="%.2f")
+    filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.36, step=0.01, format="%.2f")
     filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
     
     st.markdown("---")
@@ -183,34 +177,15 @@ def process_strategy(data, is_reversed=False):
         e_time = ist_now.strftime("%H:%M")
         t_type = trade.get('type') if trade else None
         
-        # Dynamic ROC Exit Logic Check
-        dynamic_roc_exit_triggered = False
-        if trade:
-            if trade['type'] == 'BUY' and roc_val < exit_roc_gt:
-                dynamic_roc_exit_triggered = True
-            elif trade['type'] == 'SELL' and roc_val > -exit_roc_lt:
-                dynamic_roc_exit_triggered = True
-
         if trade:
             status = "IN TRADE"
             e_time = trade.get('time', e_time)
             p_text = trade.get('prob_text', "MED")
-            # Standard TP/SL exits OR Dynamic ROC Exit
             if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
-               (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])) or \
-               dynamic_roc_exit_triggered:
+               (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
                 del st.session_state.dual_trades[strategy_key][symbol]
                 save_persistent_trades(st.session_state.dual_trades)
-                status = "WAITING"
-                trade = None
-                t_type = None
-        
-        # Entry Logic (only processed if we are not currently holding an open trade)
-        if not trade and vol_surge:
-            # Dynamic ROC Entry Filter implementation
-            if roc_val >= 0 and roc_val < entry_roc_gt: continue
-            if roc_val < 0 and roc_val > -entry_roc_lt: continue
-
+        elif vol_surge:
             if not is_reversed:
                 if cmp > c_open and lrc_dir == "UP":
                     t_type, status = "BUY", "🔥 BUY"
@@ -237,8 +212,6 @@ def process_strategy(data, is_reversed=False):
                     'time': e_time, 'prob_text': p_text
                 }
                 save_persistent_trades(st.session_state.dual_trades)
-                status = "IN TRADE"
-                trade = st.session_state.dual_trades[strategy_key][symbol]
         else:
             p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
@@ -252,10 +225,9 @@ def process_strategy(data, is_reversed=False):
             elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Sell"
             else: trade_cond = "-"
 
-        # Watchlist filtering criteria based on Entry Parameters (only for inactive trades)
-        if not trade:
-            if roc_val >= 0 and roc_val < entry_roc_gt: continue
-            if roc_val < 0 and roc_val > -entry_roc_lt: continue
+        # --- FILTERS ---
+        if roc_val >= 0 and roc_val < filter_roc_gt: continue
+        if roc_val < 0 and roc_val > -filter_roc_lt: continue
 
         if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy": continue
         if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell": continue
@@ -302,7 +274,7 @@ df_reg = process_strategy(raw_market_data, is_reversed=False) if not isinstance(
 df_rev = process_strategy(raw_market_data, is_reversed=True) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
 
 
-# --- 🏢 CONSOLIDATED TRADE WINDOW ---
+# --- 🏢 CHANGED ELEMENT: 1) CONSOLIDATED TRADE WINDOW ---
 st.markdown("---")
 st.header("🪟 1) TRADE WINDOW")
 
