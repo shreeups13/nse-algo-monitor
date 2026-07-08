@@ -1,4 +1,4 @@
-#G9.09.06.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW
+#G9.06.07.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -77,18 +77,22 @@ with st.sidebar:
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
-# --- HEADER (INDICES) ---
+# --- HEADER (INDICES with MultiIndex Protection) ---
 ist_now = get_ist()
 open_status, status_text = is_market_open()
 
 try:
     indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)['Close']
-    n_curr, n_prev = indices["^NSEI"].dropna().iloc[-1], indices["^NSEI"].dropna().iloc[0]
-    s_curr, s_prev = indices["^BSESN"].dropna().iloc[-1], indices["^BSESN"].dropna().iloc[0]
+    n_series = indices["^NSEI"].dropna()
+    s_series = indices["^BSESN"].dropna()
+    
+    n_curr, n_prev = n_series.iloc[-1], n_series.iloc[0]
+    s_curr, s_prev = s_series.iloc[-1], s_series.iloc[0]
+    
     n_chg = ((n_curr - n_prev) / n_prev) * 100
     s_chg = ((s_curr - s_prev) / s_prev) * 100
     st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
-except:
+except Exception as e:
     st.markdown("### Indices: `Connecting...`")
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
@@ -138,11 +142,17 @@ def process_strategy(data, is_reversed=False):
         else:
             trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
         
-        # ADX Calculation Block
-        high, low, close = df['High'].values, df['Low'].values, df['Close'].values
-        prev_high, prev_low, prev_close = df['High'].shift(1).values, df['Low'].shift(1).values, df['Close'].shift(1).values
+        # --- FIXED ALIGNED ADX CALCULATIONS ---
+        high, low, close = df['High'], df['Low'], df['Close']
+        prev_high, prev_low, prev_close = high.shift(1), low.shift(1), close.shift(1)
         
-        tr = np.nanmax(np.vstack([high - low, np.abs(high - prev_close), np.abs(low - prev_close)]), axis=0)
+        tr = np.nanmax(np.vstack([
+            (high - low).values, 
+            np.abs(high - prev_close).values, 
+            np.abs(low - prev_close).values
+        ]), axis=0)
+        
+        tr_series = pd.Series(tr, index=df.index)
         up_move = high - prev_high
         down_move = prev_low - low
         
@@ -151,13 +161,15 @@ def process_strategy(data, is_reversed=False):
         
         window = 14
         if len(df) >= window + 2:
-            tr_s = pd.Series(tr).rolling(window).sum().values
-            p_dm_s = pd.Series(plus_dm).rolling(window).sum().values
-            m_dm_s = pd.Series(minus_dm).rolling(window).sum().values
+            tr_s = tr_series.rolling(window).sum()
+            p_dm_s = pd.Series(plus_dm, index=df.index).rolling(window).sum()
+            m_dm_s = pd.Series(minus_dm, index=df.index).rolling(window).sum()
             
             p_di = 100 * (p_dm_s / np.where(tr_s == 0, 1e-9, tr_s))
             m_di = 100 * (m_dm_s / np.where(tr_s == 0, 1e-9, tr_s))
-            current_adx = float(pd.Series(100 * (np.abs(p_di - m_di) / np.where((p_di + m_di) == 0, 1e-9, (p_di + m_di)))).rolling(window).mean().values[-1])
+            
+            adx_series = 100 * (np.abs(p_di - m_di) / np.where((p_di + m_di) == 0, 1e-9, (p_di + m_di)))
+            current_adx = float(adx_series.rolling(window).mean().iloc[-1])
         else:
             current_adx = 0.0
             
@@ -253,6 +265,7 @@ try:
 except:
     raw_market_data = {}
 
+# --- FIXED DYNAMIC STYLES ---
 def apply_dynamic_styles(df):
     styles = pd.DataFrame('', index=df.index, columns=df.columns)
     for i, row in df.iterrows():
@@ -260,7 +273,10 @@ def apply_dynamic_styles(df):
             row_bg = '#c6f6d5' if row['TradeType'] == 'BUY' else '#fed7d7'
             styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
             
-            if row['TradeType'] == 'BUY':
+            # Checks fallback text strings if underlying active trade data dictionary state is absent
+            is_buy = row['TradeType'] == 'BUY' or (isinstance(row['Trade'], str) and "Buy" in row['Trade'])
+            
+            if is_buy:
                 cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
             else:
                 cmp_bg = '#1a8a44' if row['CMP'] <= row['Entry'] else '#c53030'
@@ -274,18 +290,17 @@ df_reg = process_strategy(raw_market_data, is_reversed=False) if not isinstance(
 df_rev = process_strategy(raw_market_data, is_reversed=True) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
 
 
-# --- 🏢 CHANGED ELEMENT: 1) CONSOLIDATED TRADE WINDOW ---
+# --- 🏢 FIXED INCLUSIVE CONSOLIDATED TRADE WINDOW ---
 st.markdown("---")
 st.header("🪟 1) TRADE WINDOW")
 
-# Filter active records for Regular & Reversed
-active_reg = df_reg[(df_reg['Status'] == "IN TRADE") & ((df_reg['CMP'] > df_reg['Entry']) | (df_reg['CMP'] < df_reg['Entry']))] if not df_reg.empty else pd.DataFrame()
-active_rev = df_rev[(df_rev['Status'] == "IN TRADE") & ((df_rev['CMP'] > df_rev['Entry']) | (df_rev['CMP'] < df_rev['Entry']))] if not df_rev.empty else pd.DataFrame()
+# Removed strict flat filters so items don't glitch away when CMP == Entry exactly
+active_reg = df_reg[df_reg['Status'] == "IN TRADE"] if not df_reg.empty else pd.DataFrame()
+active_rev = df_rev[df_rev['Status'] == "IN TRADE"] if not df_rev.empty else pd.DataFrame()
 
 # Merge matrices to eliminate duplication across displays
 if not active_reg.empty or not active_rev.empty:
     combined_trades = pd.concat([active_reg, active_rev], ignore_index=True)
-    # Deduplicate keeping standard monitor preference to keep layout clean
     combined_trades = combined_trades.drop_duplicates(subset=["Stock"], keep="first")
     
     view_trade_window = combined_trades.style.apply(apply_dynamic_styles, axis=None).format({
@@ -293,7 +308,7 @@ if not active_reg.empty or not active_rev.empty:
     })
     st.dataframe(view_trade_window, use_container_width=True, hide_index=True, column_order=columns_to_show)
 else:
-    st.info("No active open positions match conditions (CMP > Entry or CMP < Entry).")
+    st.info("No active open positions match conditions.")
 
 
 # --- RENDER SIDE-BY-SIDE PANELS ---
