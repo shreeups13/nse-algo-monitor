@@ -1,4 +1,4 @@
-#G9.06.07.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW
+#G9.09.07.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW_AD
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +9,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.7 (Dual Mode)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.8 (A/D Dual Mode)", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_dual.json"
 
@@ -66,6 +66,7 @@ with st.sidebar:
     use_sma50 = st.checkbox("SMA (50)", value=False)
     use_roc = st.checkbox("ROC (5)", value=True)
     use_lrc = st.checkbox("LRC Trend", value=True)
+    use_ad = st.checkbox("Show A/D Direction", value=True)
     
     st.markdown("---")
     full_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
@@ -77,7 +78,7 @@ with st.sidebar:
         if os.path.exists(TRADES_FILE): os.remove(TRADES_FILE)
         st.rerun()
 
-# --- HEADER (INDICES with MultiIndex Protection) ---
+# --- HEADER (INDICES) ---
 ist_now = get_ist()
 open_status, status_text = is_market_open()
 
@@ -114,6 +115,31 @@ def process_strategy(data, is_reversed=False):
         sigs = []
         prob_score = 0
         p_text = "LOW"
+        
+        # --- NEW: ACCUMULATION / DISTRIBUTION CALCULATION ---
+        highs = df['High']
+        lows = df['Low']
+        closes = df['Close']
+        volumes = df['Volume']
+        
+        # Avoid division by zero when high equals low
+        denominator = np.where(highs == lows, 1e-9, highs - lows)
+        mfm = ((closes - lows) - (highs - closes)) / denominator
+        mfv = mfm * volumes
+        ad_series = mfv.cumsum()
+        
+        # Establish dynamic baseline momentum for A/D (last 3 periods direction)
+        ad_curr = ad_series.iloc[-1]
+        ad_prev = ad_series.iloc[-2]
+        
+        if ad_curr > ad_prev:
+            ad_display = f"🔼 Acc ({ad_curr:,.0f})"
+            if closes.iloc[-1] > closes.iloc[-2]: prob_score += 1 # Trend validation
+        elif ad_curr < ad_prev:
+            ad_display = f"🔽 Dist ({ad_curr:,.0f})"
+            if closes.iloc[-1] < closes.iloc[-2]: prob_score += 1
+        else:
+            ad_display = f"Neutral ({ad_curr:,.0f})"
         
         # ROC Calculation
         p5 = df['Close'].iloc[-6]
@@ -249,13 +275,13 @@ def process_strategy(data, is_reversed=False):
         results.append({
             "Stock": flag + symbol, "Trade": trade_flag + trade_cond, "Qty": f"{qty_flag}{int(capital // cmp)}", 
             "CMP": cmp, "Entry": trade['entry'] if trade else 0.0, "SL": trade['sl'] if trade else 0.0,
-            "Target": trade['target'] if trade else 0.0, "Signal": " | ".join(sigs), "Status": status, 
+            "Target": trade['target'] if trade else 0.0, "A/D Line": ad_display, "Signal": " | ".join(sigs), "Status": status, 
             "Prob": p_text, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val), "TradeType": t_type
         })
     
     if not results: return pd.DataFrame()
     df_out = pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
-    return df_out[["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time", "TradeType"]]
+    return df_out[["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "A/D Line", "Signal", "Status", "Prob", "Time", "TradeType"]]
 
 
 # --- EXECUTE FETCH ---
@@ -273,7 +299,6 @@ def apply_dynamic_styles(df):
             row_bg = '#c6f6d5' if row['TradeType'] == 'BUY' else '#fed7d7'
             styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
             
-            # Checks fallback text strings if underlying active trade data dictionary state is absent
             is_buy = row['TradeType'] == 'BUY' or (isinstance(row['Trade'], str) and "Buy" in row['Trade'])
             
             if is_buy:
@@ -283,7 +308,8 @@ def apply_dynamic_styles(df):
             styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
     return styles
 
-columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Signal", "Status", "Prob", "Time"]
+# Added "A/D Line" directly to presentation parameters 
+columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "A/D Line", "Signal", "Status", "Prob", "Time"]
 
 # Process datasets
 df_reg = process_strategy(raw_market_data, is_reversed=False) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
@@ -294,11 +320,9 @@ df_rev = process_strategy(raw_market_data, is_reversed=True) if not isinstance(r
 st.markdown("---")
 st.header("🪟 1) TRADE WINDOW")
 
-# Removed strict flat filters so items don't glitch away when CMP == Entry exactly
 active_reg = df_reg[df_reg['Status'] == "IN TRADE"] if not df_reg.empty else pd.DataFrame()
 active_rev = df_rev[df_rev['Status'] == "IN TRADE"] if not df_rev.empty else pd.DataFrame()
 
-# Merge matrices to eliminate duplication across displays
 if not active_reg.empty or not active_rev.empty:
     combined_trades = pd.concat([active_reg, active_rev], ignore_index=True)
     combined_trades = combined_trades.drop_duplicates(subset=["Stock"], keep="first")
