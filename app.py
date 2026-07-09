@@ -1,4 +1,4 @@
-#G9.09.07.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW_AD
+#G9.06.07.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW_AD_REVERSAL
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,7 +9,7 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v4.8 (A/D Dual Mode)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="NSE Pro Monitor v4.9 (Trend Shift Mode)", layout="wide", page_icon="📈")
 
 TRADES_FILE = "trade_history_dual.json"
 
@@ -66,7 +66,6 @@ with st.sidebar:
     use_sma50 = st.checkbox("SMA (50)", value=False)
     use_roc = st.checkbox("ROC (5)", value=True)
     use_lrc = st.checkbox("LRC Trend", value=True)
-    use_ad = st.checkbox("Show A/D Direction", value=True)
     
     st.markdown("---")
     full_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
@@ -116,31 +115,36 @@ def process_strategy(data, is_reversed=False):
         prob_score = 0
         p_text = "LOW"
         
-        # --- NEW: ACCUMULATION / DISTRIBUTION CALCULATION ---
+        # --- A/D LINE CALCULATION ---
         highs = df['High']
         lows = df['Low']
         closes = df['Close']
         volumes = df['Volume']
         
-        # Avoid division by zero when high equals low
-        denominator = np.where(highs == lows, 1e-9, highs - lows)
-        mfm = ((closes - lows) - (highs - closes)) / denominator
+        denom = np.where(highs == lows, 1e-9, highs - lows)
+        mfm = ((closes - lows) - (highs - closes)) / denom
         mfv = mfm * volumes
         ad_series = mfv.cumsum()
         
-        # Establish dynamic baseline momentum for A/D (last 3 periods direction)
-        ad_curr = ad_series.iloc[-1]
-        ad_prev = ad_series.iloc[-2]
+        # --- AUTOMATED TREND CHANGE ENGINE (LOOKBACK = 10 BARS) ---
+        lookback = 10
+        y_p = closes.tail(lookback).values
+        y_ad = ad_series.tail(lookback).values
+        x_axis = np.arange(lookback)
         
-        if ad_curr > ad_prev:
-            ad_display = f"🔼 Acc ({ad_curr:,.0f})"
-            if closes.iloc[-1] > closes.iloc[-2]: prob_score += 1 # Trend validation
-        elif ad_curr < ad_prev:
-            ad_display = f"🔽 Dist ({ad_curr:,.0f})"
-            if closes.iloc[-1] < closes.iloc[-2]: prob_score += 1
+        slope_price, _ = np.polyfit(x_axis, y_p, 1)
+        slope_ad, _ = np.polyfit(x_axis, y_ad, 1)
+        
+        # Track structural reversals via divergence checks
+        if slope_price < 0 and slope_ad > 0:
+            trend_status = "🚨 Bullish Shift" # Price drops but volume metrics accumulate
+            prob_score += 1
+        elif slope_price > 0 and slope_ad < 0:
+            trend_status = "🚨 Bearish Shift" # Price extends but institutions dump
+            prob_score += 1
         else:
-            ad_display = f"Neutral ({ad_curr:,.0f})"
-        
+            trend_status = "🔼 Continuous" if slope_ad > 0 else "🔽 Continuous"
+
         # ROC Calculation
         p5 = df['Close'].iloc[-6]
         roc_val = ((cmp - p5) / p5) * 100
@@ -275,13 +279,13 @@ def process_strategy(data, is_reversed=False):
         results.append({
             "Stock": flag + symbol, "Trade": trade_flag + trade_cond, "Qty": f"{qty_flag}{int(capital // cmp)}", 
             "CMP": cmp, "Entry": trade['entry'] if trade else 0.0, "SL": trade['sl'] if trade else 0.0,
-            "Target": trade['target'] if trade else 0.0, "A/D Line": ad_display, "Signal": " | ".join(sigs), "Status": status, 
+            "Target": trade['target'] if trade else 0.0, "A/D Trend": trend_status, "Signal": " | ".join(sigs), "Status": status, 
             "Prob": p_text, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val), "TradeType": t_type
         })
     
     if not results: return pd.DataFrame()
     df_out = pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
-    return df_out[["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "A/D Line", "Signal", "Status", "Prob", "Time", "TradeType"]]
+    return df_out[["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "A/D Trend", "Signal", "Status", "Prob", "Time", "TradeType"]]
 
 
 # --- EXECUTE FETCH ---
@@ -308,8 +312,7 @@ def apply_dynamic_styles(df):
             styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
     return styles
 
-# Added "A/D Line" directly to presentation parameters 
-columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "A/D Line", "Signal", "Status", "Prob", "Time"]
+columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "A/D Trend", "Signal", "Status", "Prob", "Time"]
 
 # Process datasets
 df_reg = process_strategy(raw_market_data, is_reversed=False) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
