@@ -293,7 +293,7 @@ tickers = [f"{s}.NS" for s in SYMBOLS]
 try:
     raw_market_data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
 except:
-    raw_market_data = pd.DataFrame()
+    raw_market_data = {}
 
 # --- FIXED DYNAMIC STYLES ---
 def apply_dynamic_styles(df):
@@ -314,16 +314,9 @@ def apply_dynamic_styles(df):
 
 columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "A/D Trend", "Signal", "Status", "Prob", "Time"]
 
-# Process datasets safely handling single vs multiple symbol structures
-if not isinstance(raw_market_data, dict) and not raw_market_data.empty:
-    if isinstance(raw_market_data.columns, pd.Index) and not isinstance(raw_market_data.columns, pd.MultiIndex):
-        raw_market_data.columns = pd.MultiIndex.from_product([[tickers[0]], raw_market_data.columns])
-        
-    df_reg = process_strategy(raw_market_data, is_reversed=False)
-    df_rev = process_strategy(raw_market_data, is_reversed=True)
-else:
-    df_reg = pd.DataFrame()
-    df_rev = pd.DataFrame()
+# Process datasets
+df_reg = process_strategy(raw_market_data, is_reversed=False) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
+df_rev = process_strategy(raw_market_data, is_reversed=True) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
 
 
 # --- 🏢 FIXED INCLUSIVE CONSOLIDATED TRADE WINDOW ---
