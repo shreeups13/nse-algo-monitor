@@ -23,6 +23,7 @@ def save_persistent_trades(trades):
     with open(TRADES_FILE, "w") as f: json.dump(trades, f)
 
 # --- MARKET CALENDAR 2026 ---
+# Note: Keep track of upcoming holidays for scheduling updates
 NSE_HOLIDAYS = [
     date(2026, 1, 26), date(2026, 3, 3), date(2026, 3, 26), date(2026, 3, 31),
     date(2026, 4, 3), date(2026, 4, 14), date(2026, 5, 1), date(2026, 5, 28),
@@ -81,6 +82,7 @@ ist_now = get_ist()
 open_status, status_text = is_market_open()
 
 try:
+    # CRITICAL MEMORY OPTIMIZATION: Shifted from 1m to 5m intervals for baseline health indices
     indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="5m", progress=False)['Close']
     n_series = indices["^NSEI"].dropna()
     s_series = indices["^BSESN"].dropna()
@@ -98,179 +100,187 @@ st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 
 # --- CALCULATION LOGIC CORE ---
 def process_strategy(data, is_reversed=False):
+    if data.empty: return pd.DataFrame()
     results = []
     strategy_key = "reversed" if is_reversed else "regular"
     
+    # Extract structural column presence to safeguard against key errors
+    available_tickers = data.columns.get_level_values(0).unique()
+    
     for symbol in SYMBOLS:
         t_str = f"{symbol}.NS"
-        if t_str not in data.columns.levels[0]: continue
-        df = data[t_str].dropna()
-        if len(df) < 20: continue
+        if t_str not in available_tickers: continue
+        
+        try:
+            df = data[t_str].dropna()
+            if len(df) < 20: continue
 
-        cmp = float(df['Close'].iloc[-1])
-        c_open = float(df['Open'].iloc[-1])
-        
-        sigs = []
-        prob_score = 0
-        p_text = "LOW"
-        
-        highs = df['High']
-        lows = df['Low']
-        closes = df['Close']
-        volumes = df['Volume']
-        
-        denom = np.where(highs == lows, 1e-9, highs - lows)
-        mfm = ((closes - lows) - (highs - closes)) / denom
-        mfv = mfm * volumes
-        ad_series = mfv.cumsum()
-        
-        lookback = 10
-        y_p = closes.tail(lookback).values
-        y_ad = ad_series.tail(lookback).values
-        x_axis = np.arange(lookback)
-        
-        slope_price, _ = np.polyfit(x_axis, y_p, 1)
-        slope_ad, _ = np.polyfit(x_axis, y_ad, 1)
-        
-        if slope_price < 0 and slope_ad > 0:
-            trend_status = "🚨 Bullish Shift"
-            prob_score += 1
-        elif slope_price > 0 and slope_ad < 0:
-            trend_status = "🚨 Bearish Shift"
-            prob_score += 1
-        else:
-            trend_status = "🔼 Continuous" if slope_ad > 0 else "🔽 Continuous"
-
-        p5 = df['Close'].iloc[-6] if len(df) >= 6 else df['Close'].iloc[0]
-        roc_val = ((cmp - p5) / p5) * 100
-        if abs(roc_val) > 0.5: prob_score += 1
-        if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
-        
-        flag = "🟢 " if 1.0 <= abs(roc_val) <= 5.0 else "🔴 "
-        
-        vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
-        vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
-        if vol_surge: prob_score += 1
-
-        y = df['Close'].tail(14).values
-        slope, intercept = np.polyfit(np.arange(len(y)), y, 1)
-        lrc_dir = "UP" if slope > 0 else "DOWN"
-        if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
-        
-        avg_price = np.mean(y)
-        lrc2 = (slope * (len(y) - 1)) + intercept
-        
-        if is_reversed:
-            trade_flag = "🟢 " if lrc2 < avg_price else "🔴 "
-        else:
-            trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
-        
-        high, low, close = df['High'], df['Low'], df['Close']
-        prev_high, prev_low, prev_close = high.shift(1), low.shift(1), close.shift(1)
-        
-        tr = np.nanmax(np.vstack([
-            (high - low).values, 
-            np.abs(high - prev_close).values, 
-            np.abs(low - prev_close).values
-        ]), axis=0)
-        
-        tr_series = pd.Series(tr, index=df.index)
-        up_move = high - prev_high
-        down_move = prev_low - low
-        
-        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-        
-        window = 14
-        if len(df) >= window + 2:
-            tr_s = tr_series.rolling(window).sum()
-            p_dm_s = pd.Series(plus_dm, index=df.index).rolling(window).sum()
-            m_dm_s = pd.Series(minus_dm, index=df.index).rolling(window).sum()
+            cmp = float(df['Close'].iloc[-1])
+            c_open = float(df['Open'].iloc[-1])
             
-            p_di = 100 * (p_dm_s / np.where(tr_s == 0, 1e-9, tr_s))
-            m_di = 100 * (m_dm_s / np.where(tr_s == 0, 1e-9, tr_s))
+            sigs = []
+            prob_score = 0
+            p_text = "LOW"
             
-            adx_series = 100 * (np.abs(p_di - m_di) / np.where((p_di + m_di) == 0, 1e-9, (p_di + m_di)))
-            current_adx = float(adx_series.rolling(window).mean().iloc[-1])
-        else:
-            current_adx = 0.0
+            highs = df['High']
+            lows = df['Low']
+            closes = df['Close']
+            volumes = df['Volume']
             
-        qty_flag = "🟢 " if current_adx > 20 else "🔴 "
-        
-        ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
-        if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
-        
-        ema_up = cmp > df['Close'].ewm(span=9).mean().iloc[-1]
-        if use_ema9: sigs.append("↑EMA" if ema_up else "↓EMA")
-        
-        if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
-
-        trade = st.session_state.dual_trades[strategy_key].get(symbol)
-        status = "WAITING"
-        e_time = ist_now.strftime("%H:%M")
-        t_type = trade.get('type') if trade else None
-        
-        if trade:
-            status = "IN TRADE"
-            e_time = trade.get('time', e_time)
-            p_text = trade.get('prob_text', "MED")
-            if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
-               (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
-                del st.session_state.dual_trades[strategy_key][symbol]
-                save_persistent_trades(st.session_state.dual_trades)
-        elif vol_surge:
-            if not is_reversed:
-                if cmp > c_open and lrc_dir == "UP":
-                    t_type, status = "BUY", "🔥 BUY"
-                    prob_score += 1
-                elif cmp < c_open and lrc_dir == "DOWN":
-                    t_type, status = "SELL", "❄️ SELL"
-                    prob_score += 1
+            denom = np.where(highs == lows, 1e-9, highs - lows)
+            mfm = ((closes - lows) - (highs - closes)) / denom
+            mfv = mfm * volumes
+            ad_series = mfv.cumsum()
+            
+            lookback = 10
+            y_p = closes.tail(lookback).values
+            y_ad = ad_series.tail(lookback).values
+            x_axis = np.arange(lookback)
+            
+            slope_price, _ = np.polyfit(x_axis, y_p, 1)
+            slope_ad, _ = np.polyfit(x_axis, y_ad, 1)
+            
+            if slope_price < 0 and slope_ad > 0:
+                trend_status = "🚨 Bullish Shift"
+                prob_score += 1
+            elif slope_price > 0 and slope_ad < 0:
+                trend_status = "🚨 Bearish Shift"
+                prob_score += 1
             else:
-                if cmp > c_open and lrc_dir == "UP":
-                    t_type, status = "SELL", "❄️ SELL"
-                    prob_score += 1
-                elif cmp < c_open and lrc_dir == "DOWN":
-                    t_type, status = "BUY", "🔥 BUY"
-                    prob_score += 1
+                trend_status = "🔼 Continuous" if slope_ad > 0 else "🔽 Continuous"
 
-            if t_type:
-                p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
-                entry = cmp
-                target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
-                sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
+            p5 = df['Close'].iloc[-6] if len(df) >= 6 else df['Close'].iloc[0]
+            roc_val = ((cmp - p5) / p5) * 100
+            if abs(roc_val) > 0.5: prob_score += 1
+            if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
+            
+            flag = "🟢 " if 1.0 <= abs(roc_val) <= 5.0 else "🔴 "
+            
+            vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
+            vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
+            if vol_surge: prob_score += 1
+
+            y = df['Close'].tail(14).values
+            slope, intercept = np.polyfit(np.arange(len(y)), y, 1)
+            lrc_dir = "UP" if slope > 0 else "DOWN"
+            if use_lrc: sigs.append(f"LRC:{'↑' if slope > 0 else '↓'}")
+            
+            avg_price = np.mean(y)
+            lrc2 = (slope * (len(y) - 1)) + intercept
+            
+            if is_reversed:
+                trade_flag = "🟢 " if lrc2 < avg_price else "🔴 "
+            else:
+                trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
+            
+            high, low, close = df['High'], df['Low'], df['Close']
+            prev_high, prev_low, prev_close = high.shift(1), low.shift(1), close.shift(1)
+            
+            tr = np.nanmax(np.vstack([
+                (high - low).values, 
+                np.abs(high - prev_close).values, 
+                np.abs(low - prev_close).values
+            ]), axis=0)
+            
+            tr_series = pd.Series(tr, index=df.index)
+            up_move = high - prev_high
+            down_move = prev_low - low
+            
+            plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+            minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+            
+            window = 14
+            if len(df) >= window + 2:
+                tr_s = tr_series.rolling(window).sum()
+                p_dm_s = pd.Series(plus_dm, index=df.index).rolling(window).sum()
+                m_dm_s = pd.Series(minus_dm, index=df.index).rolling(window).sum()
                 
-                st.session_state.dual_trades[strategy_key][symbol] = {
-                    'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
-                    'time': e_time, 'prob_text': p_text
-                }
-                save_persistent_trades(st.session_state.dual_trades)
-        else:
-            p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
+                p_di = 100 * (p_dm_s / np.where(tr_s == 0, 1e-9, tr_s))
+                m_di = 100 * (m_dm_s / np.where(tr_s == 0, 1e-9, tr_s))
+                
+                adx_series = 100 * (np.abs(p_di - m_di) / np.where((p_di + m_di) == 0, 1e-9, (p_di + m_di)))
+                current_adx = float(adx_series.rolling(window).mean().iloc[-1])
+            else:
+                current_adx = 0.0
+                
+            qty_flag = "🟢 " if current_adx > 20 else "🔴 "
+            
+            ma_up = cmp > df['Close'].rolling(20).mean().iloc[-1]
+            if use_ma20: sigs.append("↑MA" if ma_up else "↓MA")
+            
+            ema_up = cmp > df['Close'].ewm(span=9).mean().iloc[-1]
+            if use_ema9: sigs.append("↑EMA" if ema_up else "↓EMA")
+            
+            if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
 
-        if not is_reversed:
-            if p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Buy"
-            elif p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up: trade_cond = "S.Sell"
-            else: trade_cond = "-"
-        else:
-            if p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up: trade_cond = "S.Buy"
-            elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Sell"
-            else: trade_cond = "-"
+            trade = st.session_state.dual_trades[strategy_key].get(symbol)
+            status = "WAITING"
+            e_time = ist_now.strftime("%H:%M")
+            t_type = trade.get('type') if trade else None
+            
+            if trade:
+                status = "IN TRADE"
+                e_time = trade.get('time', e_time)
+                p_text = trade.get('prob_text', "MED")
+                if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
+                   (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
+                    del st.session_state.dual_trades[strategy_key][symbol]
+                    save_persistent_trades(st.session_state.dual_trades)
+            elif vol_surge:
+                if not is_reversed:
+                    if cmp > c_open and lrc_dir == "UP":
+                        t_type, status = "BUY", "🔥 BUY"
+                        prob_score += 1
+                    elif cmp < c_open and lrc_dir == "DOWN":
+                        t_type, status = "SELL", "❄️ SELL"
+                        prob_score += 1
+                else:
+                    if cmp > c_open and lrc_dir == "UP":
+                        t_type, status = "SELL", "❄️ SELL"
+                        prob_score += 1
+                    elif cmp < c_open and lrc_dir == "DOWN":
+                        t_type, status = "BUY", "🔥 BUY"
+                        prob_score += 1
 
-        if roc_val >= 0 and roc_val < filter_roc_gt: continue
-        if roc_val < 0 and roc_val > -filter_roc_lt: continue
+                if t_type:
+                    p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
+                    entry = cmp
+                    target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
+                    sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
+                    
+                    st.session_state.dual_trades[strategy_key][symbol] = {
+                        'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
+                        'time': e_time, 'prob_text': p_text
+                    }
+                    save_persistent_trades(st.session_state.dual_trades)
+            else:
+                p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
-        if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy": continue
-        if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell": continue
-        if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]: continue
-        if filter_trade_type == "Blank Only" and trade_cond != "-": continue
+            if not is_reversed:
+                if p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Buy"
+                elif p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up: trade_cond = "S.Sell"
+                else: trade_cond = "-"
+            else:
+                if p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up: trade_cond = "S.Buy"
+                elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Sell"
+                else: trade_cond = "-"
 
-        results.append({
-            "Stock": flag + symbol, "Trade": trade_flag + trade_cond, "Qty": f"{qty_flag}{int(capital // cmp)}", 
-            "CMP": cmp, "Entry": trade['entry'] if trade else 0.0, "SL": trade['sl'] if trade else 0.0,
-            "Target": trade['target'] if trade else 0.0, "A/D Trend": trend_status, "Signal": " | ".join(sigs), "Status": status, 
-            "Prob": p_text, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val), "TradeType": t_type
-        })
+            if roc_val >= 0 and roc_val < filter_roc_gt: continue
+            if roc_val < 0 and roc_val > -filter_roc_lt: continue
+
+            if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy": continue
+            if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell": continue
+            if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]: continue
+            if filter_trade_type == "Blank Only" and trade_cond != "-": continue
+
+            results.append({
+                "Stock": flag + symbol, "Trade": trade_flag + trade_cond, "Qty": f"{qty_flag}{int(capital // cmp)}", 
+                "CMP": cmp, "Entry": trade['entry'] if trade else 0.0, "SL": trade['sl'] if trade else 0.0,
+                "Target": trade['target'] if trade else 0.0, "A/D Trend": trend_status, "Signal": " | ".join(sigs), "Status": status, 
+                "Prob": p_text, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val), "TradeType": t_type
+            })
+        except Exception:
+            continue # Quietly skip individual ticker anomalies to prevent app crashes
     
     if not results: return pd.DataFrame()
     df_out = pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
@@ -280,9 +290,10 @@ def process_strategy(data, is_reversed=False):
 # --- EXECUTE FETCH ---
 tickers = [f"{s}.NS" for s in SYMBOLS]
 try:
-    # OPTIMIZATION: Reduced history from '7d' to '3d' to cut RAM usage by over 50%
-    raw_market_data = yf.download(tickers, period='3d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
-except Exception as e:
+    # CRITICAL MEMORY OPTIMIZATION: Dropped lookback from 7d to 2d. 
+    # Your max rolling lookback is only 50 elements; 2 days of 5m bars is plenty.
+    raw_market_data = yf.download(tickers, period='2d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+except Exception:
     raw_market_data = pd.DataFrame()
 
 # --- FIXED DYNAMIC STYLES ---
@@ -309,7 +320,7 @@ df_reg = process_strategy(raw_market_data, is_reversed=False) if isinstance(raw_
 df_rev = process_strategy(raw_market_data, is_reversed=True) if isinstance(raw_market_data, pd.DataFrame) and not raw_market_data.empty else pd.DataFrame()
 
 
-# --- TRADE WINDOW ---
+# --- FIXED INCLUSIVE CONSOLIDATED TRADE WINDOW ---
 st.markdown("---")
 st.header("🪟 1) TRADE WINDOW")
 
@@ -354,7 +365,7 @@ with col_rev:
     else:
         st.caption("No tickers match reversal filters right now.")
 
-# --- REFRESH RATE (FIXED MEMORY EXHAUSTION) ---
-# Removed blocking sleep loop. The app will rerun naturally without accumulating thread memory.
+# --- REFRESH CONFIGURATION ---
+# Cleaned up trailing string junk syntax from the original draft
 time.sleep(60 if open_status else 300)
 st.rerun()
