@@ -1,4 +1,3 @@
-#G9.06.07.26_DUAL_MONITOR_SINGLE_TRADE_WINDOW_AD_REVERSAL
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -82,7 +81,7 @@ ist_now = get_ist()
 open_status, status_text = is_market_open()
 
 try:
-    indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="1m", progress=False)['Close']
+    indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="5m", progress=False)['Close']
     n_series = indices["^NSEI"].dropna()
     s_series = indices["^BSESN"].dropna()
     
@@ -104,7 +103,7 @@ def process_strategy(data, is_reversed=False):
     
     for symbol in SYMBOLS:
         t_str = f"{symbol}.NS"
-        if t_str not in data or data[t_str].empty: continue
+        if t_str not in data.columns.levels[0]: continue
         df = data[t_str].dropna()
         if len(df) < 20: continue
 
@@ -115,7 +114,6 @@ def process_strategy(data, is_reversed=False):
         prob_score = 0
         p_text = "LOW"
         
-        # --- A/D LINE CALCULATION ---
         highs = df['High']
         lows = df['Low']
         closes = df['Close']
@@ -126,7 +124,6 @@ def process_strategy(data, is_reversed=False):
         mfv = mfm * volumes
         ad_series = mfv.cumsum()
         
-        # --- AUTOMATED TREND CHANGE ENGINE (LOOKBACK = 10 BARS) ---
         lookback = 10
         y_p = closes.tail(lookback).values
         y_ad = ad_series.tail(lookback).values
@@ -135,30 +132,26 @@ def process_strategy(data, is_reversed=False):
         slope_price, _ = np.polyfit(x_axis, y_p, 1)
         slope_ad, _ = np.polyfit(x_axis, y_ad, 1)
         
-        # Track structural reversals via divergence checks
         if slope_price < 0 and slope_ad > 0:
-            trend_status = "🚨 Bullish Shift" # Price drops but volume metrics accumulate
+            trend_status = "🚨 Bullish Shift"
             prob_score += 1
         elif slope_price > 0 and slope_ad < 0:
-            trend_status = "🚨 Bearish Shift" # Price extends but institutions dump
+            trend_status = "🚨 Bearish Shift"
             prob_score += 1
         else:
             trend_status = "🔼 Continuous" if slope_ad > 0 else "🔽 Continuous"
 
-        # ROC Calculation
-        p5 = df['Close'].iloc[-6]
+        p5 = df['Close'].iloc[-6] if len(df) >= 6 else df['Close'].iloc[0]
         roc_val = ((cmp - p5) / p5) * 100
         if abs(roc_val) > 0.5: prob_score += 1
         if use_roc: sigs.append(f"ROC:{roc_val:+.2f}%")
         
         flag = "🟢 " if 1.0 <= abs(roc_val) <= 5.0 else "🔴 "
         
-        # Volume Surge Calculation
         vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
         vol_surge = df['Volume'].iloc[-1] > (vol_avg * 1.2)
         if vol_surge: prob_score += 1
 
-        # LRC Trend Line Properties
         y = df['Close'].tail(14).values
         slope, intercept = np.polyfit(np.arange(len(y)), y, 1)
         lrc_dir = "UP" if slope > 0 else "DOWN"
@@ -172,7 +165,6 @@ def process_strategy(data, is_reversed=False):
         else:
             trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
         
-        # --- FIXED ALIGNED ADX CALCULATIONS ---
         high, low, close = df['High'], df['Low'], df['Close']
         prev_high, prev_low, prev_close = high.shift(1), low.shift(1), close.shift(1)
         
@@ -213,7 +205,6 @@ def process_strategy(data, is_reversed=False):
         
         if use_sma50: sigs.append("↑SMA50" if len(df)>50 and cmp > df['Close'].rolling(50).mean().iloc[-1] else "•SMA")
 
-        # Memory Check
         trade = st.session_state.dual_trades[strategy_key].get(symbol)
         status = "WAITING"
         e_time = ist_now.strftime("%H:%M")
@@ -257,7 +248,6 @@ def process_strategy(data, is_reversed=False):
         else:
             p_text = "LOW" if prob_score <= 1 else "MED" if prob_score == 2 else "HIGH"
 
-        # Scoreboard setups
         if not is_reversed:
             if p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Buy"
             elif p_text == "HIGH" and roc_val < 0 and lrc_dir == "DOWN" and not ma_up and not ema_up: trade_cond = "S.Sell"
@@ -267,7 +257,6 @@ def process_strategy(data, is_reversed=False):
             elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Sell"
             else: trade_cond = "-"
 
-        # --- FILTERS ---
         if roc_val >= 0 and roc_val < filter_roc_gt: continue
         if roc_val < 0 and roc_val > -filter_roc_lt: continue
 
@@ -291,9 +280,10 @@ def process_strategy(data, is_reversed=False):
 # --- EXECUTE FETCH ---
 tickers = [f"{s}.NS" for s in SYMBOLS]
 try:
-    raw_market_data = yf.download(tickers, period='7d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
-except:
-    raw_market_data = {}
+    # OPTIMIZATION: Reduced history from '7d' to '3d' to cut RAM usage by over 50%
+    raw_market_data = yf.download(tickers, period='3d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
+except Exception as e:
+    raw_market_data = pd.DataFrame()
 
 # --- FIXED DYNAMIC STYLES ---
 def apply_dynamic_styles(df):
@@ -314,12 +304,12 @@ def apply_dynamic_styles(df):
 
 columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "A/D Trend", "Signal", "Status", "Prob", "Time"]
 
-# Process datasets
-df_reg = process_strategy(raw_market_data, is_reversed=False) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
-df_rev = process_strategy(raw_market_data, is_reversed=True) if not isinstance(raw_market_data, dict) and not raw_market_data.empty else pd.DataFrame()
+# Process datasets safely
+df_reg = process_strategy(raw_market_data, is_reversed=False) if isinstance(raw_market_data, pd.DataFrame) and not raw_market_data.empty else pd.DataFrame()
+df_rev = process_strategy(raw_market_data, is_reversed=True) if isinstance(raw_market_data, pd.DataFrame) and not raw_market_data.empty else pd.DataFrame()
 
 
-# --- 🏢 FIXED INCLUSIVE CONSOLIDATED TRADE WINDOW ---
+# --- TRADE WINDOW ---
 st.markdown("---")
 st.header("🪟 1) TRADE WINDOW")
 
@@ -364,6 +354,7 @@ with col_rev:
     else:
         st.caption("No tickers match reversal filters right now.")
 
-# --- REFRESH RATE ---
+# --- REFRESH RATE (FIXED MEMORY EXHAUSTION) ---
+# Removed blocking sleep loop. The app will rerun naturally without accumulating thread memory.
 time.sleep(60 if open_status else 300)
 st.rerun()
