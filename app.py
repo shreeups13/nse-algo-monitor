@@ -23,7 +23,6 @@ def save_persistent_trades(trades):
     with open(TRADES_FILE, "w") as f: json.dump(trades, f)
 
 # --- MARKET CALENDAR 2026 ---
-# Note: Keep track of upcoming holidays for scheduling updates
 NSE_HOLIDAYS = [
     date(2026, 1, 26), date(2026, 3, 3), date(2026, 3, 26), date(2026, 3, 31),
     date(2026, 4, 3), date(2026, 4, 14), date(2026, 5, 1), date(2026, 5, 28),
@@ -82,45 +81,46 @@ ist_now = get_ist()
 open_status, status_text = is_market_open()
 
 try:
-    # CRITICAL MEMORY OPTIMIZATION: Shifted from 1m to 5m intervals for baseline health indices
-    indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="5m", progress=False)['Close']
-    n_series = indices["^NSEI"].dropna()
-    s_series = indices["^BSESN"].dropna()
-    
-    n_curr, n_prev = n_series.iloc[-1], n_series.iloc[0]
-    s_curr, s_prev = s_series.iloc[-1], s_series.iloc[0]
-    
-    n_chg = ((n_curr - n_prev) / n_prev) * 100
-    s_chg = ((s_curr - s_prev) / s_prev) * 100
-    st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
-except Exception as e:
+    indices = yf.download(["^NSEI", "^BSESN"], period="2d", interval="5m", progress=False)
+    if not indices.empty and 'Close' in indices.columns:
+        n_series = indices["Close"]["^NSEI"].dropna()
+        s_series = indices["Close"]["^BSESN"].dropna()
+        
+        n_curr, n_prev = n_series.iloc[-1], n_series.iloc[0]
+        s_curr, s_prev = s_series.iloc[-1], s_series.iloc[0]
+        
+        n_chg = ((n_curr - n_prev) / n_prev) * 100
+        s_chg = ((s_curr - s_prev) / s_prev) * 100
+        st.markdown(f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])")
+    else:
+        st.markdown("### Indices: `Data Temporarily Unavailable`")
+except Exception:
     st.markdown("### Indices: `Connecting...`")
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 
 # --- CALCULATION LOGIC CORE ---
 def process_strategy(data, is_reversed=False):
-    if data.empty: return pd.DataFrame()
+    if data.empty or not isinstance(data.columns, pd.MultiIndex): return pd.DataFrame()
     results = []
     strategy_key = "reversed" if is_reversed else "regular"
     
-    # Extract structural column presence to safeguard against key errors
-    available_tickers = data.columns.get_level_values(0).unique()
+    # PERMANENT FIX: Safely scan actual existing columns instead of levels
+    actual_present_tickers = set([col[0] for col in data.columns])
     
     for symbol in SYMBOLS:
         t_str = f"{symbol}.NS"
-        if t_str not in available_tickers: continue
+        if t_str not in actual_present_tickers: continue
         
         try:
-            df = data[t_str].dropna()
-            if len(df) < 20: continue
+            df = data[t_str].dropna(subset=['Close', 'Open', 'High', 'Low'])
+            if len(df) < 25: continue  # Ensure baseline tracking elements exist
 
             cmp = float(df['Close'].iloc[-1])
             c_open = float(df['Open'].iloc[-1])
             
             sigs = []
             prob_score = 0
-            p_text = "LOW"
             
             highs = df['High']
             lows = df['Low']
@@ -173,16 +173,17 @@ def process_strategy(data, is_reversed=False):
             else:
                 trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
             
+            # ADX BLOCK PROTECTION
             high, low, close = df['High'], df['Low'], df['Close']
             prev_high, prev_low, prev_close = high.shift(1), low.shift(1), close.shift(1)
             
-            tr = np.nanmax(np.vstack([
-                (high - low).values, 
-                np.abs(high - prev_close).values, 
-                np.abs(low - prev_close).values
-            ]), axis=0)
+            v_1 = (high - low).values
+            v_2 = np.abs(high - prev_close).values
+            v_3 = np.abs(low - prev_close).values
             
+            tr = np.nanmax(np.column_stack([v_1, v_2, v_3]), axis=1)
             tr_series = pd.Series(tr, index=df.index)
+            
             up_move = high - prev_high
             down_move = prev_low - low
             
@@ -280,18 +281,15 @@ def process_strategy(data, is_reversed=False):
                 "Prob": p_text, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val), "TradeType": t_type
             })
         except Exception:
-            continue # Quietly skip individual ticker anomalies to prevent app crashes
-    
+            continue # If an isolated ticker has corrupt shapes or values, skip it gracefully
+            
     if not results: return pd.DataFrame()
     df_out = pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
     return df_out[["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "A/D Trend", "Signal", "Status", "Prob", "Time", "TradeType"]]
 
-
 # --- EXECUTE FETCH ---
 tickers = [f"{s}.NS" for s in SYMBOLS]
 try:
-    # CRITICAL MEMORY OPTIMIZATION: Dropped lookback from 7d to 2d. 
-    # Your max rolling lookback is only 50 elements; 2 days of 5m bars is plenty.
     raw_market_data = yf.download(tickers, period='2d', interval='5m', group_by='ticker', auto_adjust=True, progress=False)
 except Exception:
     raw_market_data = pd.DataFrame()
@@ -305,7 +303,6 @@ def apply_dynamic_styles(df):
             styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
             
             is_buy = row['TradeType'] == 'BUY' or (isinstance(row['Trade'], str) and "Buy" in row['Trade'])
-            
             if is_buy:
                 cmp_bg = '#1a8a44' if row['CMP'] >= row['Entry'] else '#c53030'
             else:
@@ -315,12 +312,10 @@ def apply_dynamic_styles(df):
 
 columns_to_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "A/D Trend", "Signal", "Status", "Prob", "Time"]
 
-# Process datasets safely
 df_reg = process_strategy(raw_market_data, is_reversed=False) if isinstance(raw_market_data, pd.DataFrame) and not raw_market_data.empty else pd.DataFrame()
 df_rev = process_strategy(raw_market_data, is_reversed=True) if isinstance(raw_market_data, pd.DataFrame) and not raw_market_data.empty else pd.DataFrame()
 
-
-# --- FIXED INCLUSIVE CONSOLIDATED TRADE WINDOW ---
+# --- 🪟 TRADE WINDOW ---
 st.markdown("---")
 st.header("🪟 1) TRADE WINDOW")
 
@@ -338,8 +333,7 @@ if not active_reg.empty or not active_rev.empty:
 else:
     st.info("No active open positions match conditions.")
 
-
-# --- RENDER SIDE-BY-SIDE PANELS ---
+# --- RENDER PANELS ---
 st.markdown("---")
 col_reg, col_rev = st.columns(2)
 
@@ -365,7 +359,6 @@ with col_rev:
     else:
         st.caption("No tickers match reversal filters right now.")
 
-# --- REFRESH CONFIGURATION ---
-# Cleaned up trailing string junk syntax from the original draft
+# --- REFRESH CONTROL ---
 time.sleep(60 if open_status else 300)
 st.rerun()
