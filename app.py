@@ -1,4 +1,4 @@
-#21.07.26 with report option 
+#21.07.26 with report
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -7,9 +7,13 @@ from datetime import datetime, timedelta, date
 import time
 import json
 import os
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import io
+
+# --- PDF GENERATION LIBRARIES ---
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="NSE Pro Monitor v5.0", layout="wide", page_icon="📈")
@@ -66,72 +70,88 @@ def is_market_open():
         return True, "🟢 MARKET LIVE"
     return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
 
+# --- REPORT GENERATORS ---
+def generate_excel_report(df_filtered, summary_stats, period_name):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Write Trades Sheet
+        df_filtered.to_excel(writer, sheet_name='Completed Trades', index=False)
+        
+        # Write Summary Sheet
+        summary_df = pd.DataFrame(list(summary_stats.items()), columns=['Metric', 'Value'])
+        summary_df.to_excel(writer, sheet_name='Performance Summary', index=False)
+        
+    output.seek(0)
+    return output
+
+def generate_pdf_report(df_filtered, summary_stats, period_name):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    story = []
+    
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=18, spaceAfter=10, textColor=colors.HexColor("#1A365D"))
+    subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Normal'], fontSize=10, spaceAfter=15, textColor=colors.gray)
+    heading_style = ParagraphStyle('HeadingStyle', parent=styles['Heading2'], fontSize=12, spaceAfter=8, textColor=colors.HexColor("#2B6CB0"))
+    
+    # Title Header
+    story.append(Paragraph(f"NSE Pro Monitor — Trade Performance Report", title_style))
+    story.append(Paragraph(f"Timeframe: <b>{period_name}</b> | Generated on: {get_ist().strftime('%d %b %Y, %H:%M IST')}", subtitle_style))
+    story.append(Spacer(1, 10))
+    
+    # Performance Summary Section
+    story.append(Paragraph("Performance Summary", heading_style))
+    summary_data = [[k, str(v)] for k, v in summary_stats.items()]
+    t_summary = Table(summary_data, colWidths=[200, 300])
+    t_summary.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F7FAFC")),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
+        ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
+        ('PADDING', (0,0), (-1,-1), 6),
+    ]))
+    story.append(t_summary)
+    story.append(Spacer(1, 15))
+    
+    # Detailed Trades Table
+    story.append(Paragraph("Trade Logs", heading_style))
+    if not df_filtered.empty:
+        # Prepare Data Table
+        table_cols = ['symbol', 'type', 'entry', 'exit', 'qty', 'pnl', 'result', 'exit_time']
+        headers = ['Symbol', 'Type', 'Entry', 'Exit', 'Qty', 'P&L (₹)', 'Result', 'Exit Time']
+        
+        table_data = [headers]
+        for _, row in df_filtered[table_cols].iterrows():
+            formatted_row = [
+                str(row['symbol']),
+                str(row['type']),
+                f"{row['entry']:.2f}",
+                f"{row['exit']:.2f}",
+                str(row['qty']),
+                f"{row['pnl']:.2f}",
+                str(row['result']),
+                str(row['exit_time'])
+            ]
+            table_data.append(formatted_row)
+            
+        t_trades = Table(table_data, colWidths=[65, 45, 55, 55, 40, 65, 50, 105])
+        t_trades.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#2D3748")),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,-1), 8),
+            ('ALIGN', (2,0), (5,-1), 'RIGHT'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#CBD5E0")),
+            ('PADDING', (0,0), (-1,-1), 5),
+        ]))
+        story.append(t_trades)
+    
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
 # --- INITIALIZE STATE ---
 if 'dual_trades' not in st.session_state:
     st.session_state.dual_trades = load_persistent_trades()
-
-if 'auto_email_sent_today' not in st.session_state:
-    st.session_state.auto_email_sent_today = False
-
-# --- EMAIL DISPATCHER ---
-def send_email_report(recipient_email, smtp_server, smtp_port, sender_email, sender_password, period="Daily"):
-    ledger = load_trade_ledger()
-    if not ledger:
-        return False, "No historical trade data found in ledger."
-    
-    df_ledger = pd.DataFrame(ledger)
-    df_ledger['exit_time'] = pd.to_datetime(df_ledger['exit_time'])
-    now = get_ist()
-
-    if period == "Daily":
-        df_filtered = df_ledger[df_ledger['exit_time'].dt.date == now.date()]
-    elif period == "Weekly":
-        start_of_week = now.date() - timedelta(days=now.weekday())
-        df_filtered = df_ledger[df_ledger['exit_time'].dt.date >= start_of_week]
-    elif period == "Monthly":
-        df_filtered = df_ledger[(df_ledger['exit_time'].dt.year == now.year) & (df_ledger['exit_time'].dt.month == now.month)]
-    else:  # Yearly
-        df_filtered = df_ledger[df_ledger['exit_time'].dt.year == now.year]
-
-    if df_filtered.empty:
-        return False, f"No trades recorded for timeframe: {period}."
-
-    total_trades = len(df_filtered)
-    wins = len(df_filtered[df_filtered['pnl'] > 0])
-    losses = len(df_filtered[df_filtered['pnl'] < 0])
-    win_ratio = (wins / total_trades * 100) if total_trades > 0 else 0
-    total_pnl = df_filtered['pnl'].sum()
-
-    body = f"""
-    <h2>NSE Pro Monitor - Trade Performance Summary ({period})</h2>
-    <p><b>Date Generated:</b> {now.strftime('%Y-%m-%d %H:%M:%S IST')}</p>
-    <hr/>
-    <ul>
-        <li><b>Total Completed Trades:</b> {total_trades}</li>
-        <li><b>Winning Trades:</b> {wins}</li>
-        <li><b>Losing Trades:</b> {losses}</li>
-        <li><b>Win Ratio:</b> {win_ratio:.2f}%</li>
-        <li><b>Total Realized P&L:</b> ₹{total_pnl:,.2f}</li>
-    </ul>
-    <h3>Trade Breakdown:</h3>
-    {df_filtered.to_html(index=False)}
-    """
-
-    msg = MIMEMultipart()
-    msg['From'] = sender_email
-    msg['To'] = recipient_email
-    msg['Subject'] = f"📈 Trading Report ({period}) - {now.strftime('%d %b %Y')}"
-    msg.attach(MIMEText(body, 'html'))
-
-    try:
-        server = smtplib.SMTP(smtp_server, int(smtp_port))
-        server.starttls()
-        server.login(sender_email, sender_password)
-        server.send_message(msg)
-        server.quit()
-        return True, "Email report sent successfully!"
-    except Exception as e:
-        return False, f"Email delivery failed: {str(e)}"
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -153,15 +173,6 @@ with st.sidebar:
     use_sma50 = st.checkbox("SMA (50)", value=False)
     use_roc = st.checkbox("ROC (5)", value=True)
     use_lrc = st.checkbox("LRC Trend", value=True)
-
-    st.markdown("---")
-    st.subheader("📧 Email Dispatcher Settings")
-    enable_auto_email = st.checkbox("Auto Email at Market Close", value=False)
-    smtp_server = st.text_input("SMTP Host", value="smtp.gmail.com")
-    smtp_port = st.text_input("SMTP Port", value="587")
-    sender_email = st.text_input("Sender Email", value="")
-    sender_password = st.text_input("Sender App Password", type="password")
-    recipient_email = st.text_input("Recipient Email", value="")
 
     st.markdown("---")
     full_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
@@ -446,7 +457,7 @@ with col_rev:
     else:
         st.caption("No tickers match reversal filters right now.")
 
-# --- 📈 4) HISTORICAL ANALYSIS & REPORTING ---
+# --- 📈 4) HISTORICAL ANALYSIS & REPORT GENERATION ---
 st.markdown("---")
 st.header("📈 4) PERFORMANCE & ANALYTICAL REPORTS")
 
@@ -478,8 +489,6 @@ if ledger_data:
         loss_ratio = (losses / total_trades) * 100 if total_trades > 0 else 0
         total_pnl = df_filtered['pnl'].sum()
         
-        avg_win = wins_df['pnl'].mean() if wins > 0 else 0.0
-        avg_loss = abs(losses_df['pnl'].mean()) if losses > 0 else 0.0
         profit_factor = (wins_df['pnl'].sum() / abs(losses_df['pnl'].sum())) if abs(losses_df['pnl'].sum()) > 0 else 0.0
 
         # KPI Metrics Cards
@@ -492,37 +501,51 @@ if ledger_data:
 
         # Visual P&L Trend Chart
         st.subheader("Cumulative P&L Trend")
-        df_filtered['cumulative_pnl'] = df_filtered['pnl'].cumsum()
-        st.line_chart(df_filtered.set_index('exit_time')['cumulative_pnl'])
+        df_filtered_chart = df_filtered.copy()
+        df_filtered_chart['cumulative_pnl'] = df_filtered_chart['pnl'].cumsum()
+        st.line_chart(df_filtered_chart.set_index('exit_time')['cumulative_pnl'])
 
         st.subheader("Detailed Trade Logs")
         st.dataframe(df_filtered, use_container_width=True, hide_index=True)
 
-        col_exp1, col_exp2 = st.columns(2)
-        with col_exp1:
-            csv_data = df_filtered.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Export CSV Report", csv_data, f"trade_report_{period_selection.lower()}_{ist_now.strftime('%Y%m%d')}.csv", "text/csv")
+        summary_dict = {
+            "Total Completed Trades": total_trades,
+            "Winning Trades": wins,
+            "Losing Trades": losses,
+            "Win Ratio": f"{win_ratio:.2f}%",
+            "Loss Ratio": f"{loss_ratio:.2f}%",
+            "Total Realized P&L": f"₹{total_pnl:,.2f}",
+            "Profit Factor": f"{profit_factor:.2f}"
+        }
+
+        st.markdown("### 📄 Export Performance Reports")
+        col_pdf, col_excel = st.columns(2)
         
-        with col_exp2:
-            if st.button("✉️ Send Instant Email Report"):
-                if sender_email and sender_password and recipient_email:
-                    success, msg = send_email_report(recipient_email, smtp_server, smtp_port, sender_email, sender_password, period=period_selection)
-                    if success: st.success(msg)
-                    else: st.error(msg)
-                else:
-                    st.warning("Please configure complete SMTP details in the sidebar first.")
+        # --- PDF GENERATION ---
+        with col_pdf:
+            pdf_data = generate_pdf_report(df_filtered, summary_dict, period_selection)
+            st.download_button(
+                label="📄 Download PDF Report",
+                data=pdf_data,
+                file_name=f"Trade_Report_{period_selection}_{ist_now.strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+
+        # --- EXCEL GENERATION ---
+        with col_excel:
+            excel_data = generate_excel_report(df_filtered, summary_dict, period_selection)
+            st.download_button(
+                label="📊 Download Excel Report",
+                data=excel_data,
+                file_name=f"Trade_Report_{period_selection}_{ist_now.strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
     else:
         st.info(f"No trades logged yet for timeframe: {period_selection}.")
 else:
     st.info("No closed trade records logged in history yet.")
-
-# --- AUTOMATIC MARKET CLOSE TRIGGER ---
-if enable_auto_email and not st.session_state.auto_email_sent_today:
-    if ist_now.hour == 15 and ist_now.minute >= 30 and ist_now.weekday() < 5:
-        if sender_email and sender_password and recipient_email:
-            success, _ = send_email_report(recipient_email, smtp_server, smtp_port, sender_email, sender_password, period="Daily")
-            if success:
-                st.session_state.auto_email_sent_today = True
 
 # --- REFRESH CONTROL ---
 time.sleep(60 if open_status else 300)
