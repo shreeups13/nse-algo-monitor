@@ -1,4 +1,4 @@
-#21.07.26 with report
+#26.06.26 with report 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -8,12 +8,6 @@ import time
 import json
 import os
 import io
-
-# --- PDF GENERATION LIBRARIES ---
-from reportlab.lib.pagesizes import letter
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="NSE Pro Monitor v5.0", layout="wide", page_icon="📈")
@@ -70,84 +64,51 @@ def is_market_open():
         return True, "🟢 MARKET LIVE"
     return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
 
-# --- REPORT GENERATORS ---
-def generate_excel_report(df_filtered, summary_stats, period_name):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Write Trades Sheet
-        df_filtered.to_excel(writer, sheet_name='Completed Trades', index=False)
+# --- BUILT-IN HTML REPORT GENERATOR (PRINTABLE TO PDF) ---
+def generate_html_report(df_filtered, summary_stats, period_name):
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>NSE Pro Monitor Report - {period_name}</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 30px; color: #2D3748; }}
+            h1 {{ color: #1A365D; border-bottom: 2px solid #2B6CB0; padding-bottom: 8px; }}
+            .subtitle {{ color: #718096; font-size: 14px; margin-bottom: 20px; }}
+            .summary-table, .trades-table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
+            .summary-table td {{ padding: 8px; border: 1px solid #E2E8F0; }}
+            .summary-table td:first-child {{ font-weight: bold; background-color: #F7FAFC; width: 40%; }}
+            .trades-table th {{ background-color: #2D3748; color: white; padding: 10px; text-align: left; font-size: 13px; }}
+            .trades-table td {{ padding: 8px; border: 1px solid #CBD5E0; font-size: 12px; }}
+            .trades-table tr:nth-child(even) {{ background-color: #F7FAFC; }}
+            .win {{ color: #2F855A; font-weight: bold; }}
+            .loss {{ color: #C53030; font-weight: bold; }}
+            @media print {{
+                body {{ margin: 0; }}
+                button {{ display: none; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <h1>📈 NSE Pro Monitor — Trade Performance Report</h1>
+        <div class="subtitle">Timeframe: <b>{period_name}</b> | Generated on: {get_ist().strftime('%d %b %Y, %H:%M IST')}</div>
         
-        # Write Summary Sheet
-        summary_df = pd.DataFrame(list(summary_stats.items()), columns=['Metric', 'Value'])
-        summary_df.to_excel(writer, sheet_name='Performance Summary', index=False)
+        <h3>Performance Summary</h3>
+        <table class="summary-table">
+            {"".join([f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in summary_stats.items()])}
+        </table>
         
-    output.seek(0)
-    return output
-
-def generate_pdf_report(df_filtered, summary_stats, period_name):
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-    story = []
-    
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=18, spaceAfter=10, textColor=colors.HexColor("#1A365D"))
-    subtitle_style = ParagraphStyle('SubTitleStyle', parent=styles['Normal'], fontSize=10, spaceAfter=15, textColor=colors.gray)
-    heading_style = ParagraphStyle('HeadingStyle', parent=styles['Heading2'], fontSize=12, spaceAfter=8, textColor=colors.HexColor("#2B6CB0"))
-    
-    # Title Header
-    story.append(Paragraph(f"NSE Pro Monitor — Trade Performance Report", title_style))
-    story.append(Paragraph(f"Timeframe: <b>{period_name}</b> | Generated on: {get_ist().strftime('%d %b %Y, %H:%M IST')}", subtitle_style))
-    story.append(Spacer(1, 10))
-    
-    # Performance Summary Section
-    story.append(Paragraph("Performance Summary", heading_style))
-    summary_data = [[k, str(v)] for k, v in summary_stats.items()]
-    t_summary = Table(summary_data, colWidths=[200, 300])
-    t_summary.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#F7FAFC")),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
-        ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
-        ('PADDING', (0,0), (-1,-1), 6),
-    ]))
-    story.append(t_summary)
-    story.append(Spacer(1, 15))
-    
-    # Detailed Trades Table
-    story.append(Paragraph("Trade Logs", heading_style))
-    if not df_filtered.empty:
-        # Prepare Data Table
-        table_cols = ['symbol', 'type', 'entry', 'exit', 'qty', 'pnl', 'result', 'exit_time']
-        headers = ['Symbol', 'Type', 'Entry', 'Exit', 'Qty', 'P&L (₹)', 'Result', 'Exit Time']
+        <h3 style="margin-top: 30px;">Trade Logs</h3>
+        {df_filtered.to_html(classes="trades-table", index=False)}
         
-        table_data = [headers]
-        for _, row in df_filtered[table_cols].iterrows():
-            formatted_row = [
-                str(row['symbol']),
-                str(row['type']),
-                f"{row['entry']:.2f}",
-                f"{row['exit']:.2f}",
-                str(row['qty']),
-                f"{row['pnl']:.2f}",
-                str(row['result']),
-                str(row['exit_time'])
-            ]
-            table_data.append(formatted_row)
-            
-        t_trades = Table(table_data, colWidths=[65, 45, 55, 55, 40, 65, 50, 105])
-        t_trades.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#2D3748")),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0,0), (-1,-1), 8),
-            ('ALIGN', (2,0), (5,-1), 'RIGHT'),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#CBD5E0")),
-            ('PADDING', (0,0), (-1,-1), 5),
-        ]))
-        story.append(t_trades)
-    
-    doc.build(story)
-    buffer.seek(0)
-    return buffer
+        <script>
+            // Optional auto-print command when opened
+            window.onload = function() {{ window.print(); }}
+        </script>
+    </body>
+    </html>
+    """
+    return html_content
 
 # --- INITIALIZE STATE ---
 if 'dual_trades' not in st.session_state:
@@ -488,10 +449,9 @@ if ledger_data:
         win_ratio = (wins / total_trades) * 100 if total_trades > 0 else 0
         loss_ratio = (losses / total_trades) * 100 if total_trades > 0 else 0
         total_pnl = df_filtered['pnl'].sum()
-        
         profit_factor = (wins_df['pnl'].sum() / abs(losses_df['pnl'].sum())) if abs(losses_df['pnl'].sum()) > 0 else 0.0
 
-        # KPI Metrics Cards
+        # Metrics Cards
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Total Trades", total_trades)
         m2.metric("Wins / Losses", f"{wins} / {losses}")
@@ -499,7 +459,7 @@ if ledger_data:
         m4.metric("Realized P&L", f"₹{total_pnl:,.2f}", delta=f"{total_pnl:,.2f}")
         m5.metric("Profit Factor", f"{profit_factor:.2f}")
 
-        # Visual P&L Trend Chart
+        # Visual Chart
         st.subheader("Cumulative P&L Trend")
         df_filtered_chart = df_filtered.copy()
         df_filtered_chart['cumulative_pnl'] = df_filtered_chart['pnl'].cumsum()
@@ -521,25 +481,25 @@ if ledger_data:
         st.markdown("### 📄 Export Performance Reports")
         col_pdf, col_excel = st.columns(2)
         
-        # --- PDF GENERATION ---
+        # --- HTML / PRINTABLE PDF EXPORT ---
         with col_pdf:
-            pdf_data = generate_pdf_report(df_filtered, summary_dict, period_selection)
+            html_data = generate_html_report(df_filtered, summary_dict, period_selection)
             st.download_button(
-                label="📄 Download PDF Report",
-                data=pdf_data,
-                file_name=f"Trade_Report_{period_selection}_{ist_now.strftime('%Y%m%d')}.pdf",
-                mime="application/pdf",
+                label="📄 Download Printable Report (PDF View)",
+                data=html_data,
+                file_name=f"Trade_Report_{period_selection}_{ist_now.strftime('%Y%m%d')}.html",
+                mime="text/html",
                 use_container_width=True
             )
 
-        # --- EXCEL GENERATION ---
+        # --- EXCEL / CSV EXPORT ---
         with col_excel:
-            excel_data = generate_excel_report(df_filtered, summary_dict, period_selection)
+            csv_data = df_filtered.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="📊 Download Excel Report",
-                data=excel_data,
-                file_name=f"Trade_Report_{period_selection}_{ist_now.strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                label="📊 Download Excel/CSV Data",
+                data=csv_data,
+                file_name=f"Trade_Report_{period_selection}_{ist_now.strftime('%Y%m%d')}.csv",
+                mime="text/csv",
                 use_container_width=True
             )
     else:
