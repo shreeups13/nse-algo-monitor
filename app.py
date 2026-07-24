@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, date
 import time
 import json
 import os
+import requests
+from bs4 import BeautifulSoup
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="NSE Pro Monitor v4.9 (Trend Shift Mode)", layout="wide", page_icon="📈")
@@ -43,60 +45,57 @@ def is_market_open():
     if start_time <= now <= end_time: return True, "🟢 MARKET LIVE"
     return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
 
-# --- AUTOMATIC TOP GAINERS & LOSERS FETCH ---
-@st.cache_data(ttl=300)
-def fetch_top_gainers_and_losers():
-    """Dynamically fetches Top Gainers and Top Losers from NSE liquid universe."""
-    universe_symbols = [
-        "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "BHARTIARTL", "ITC", "SBIN", "LTIM", "LODHA",
-        "HINDUNILVR", "LT", "BAJFINANCE", "HCLTECH", "MARUTI", "SUNPHARMA", "ADANIENT", "KOTAKBANK", "TITAN",
-        "ONGC", "TATAMOTORS", "NTPC", "AXISBANK", "ADANIPORTS", "COALINDIA", "POWERGRID", "TATASTEEL", "M&M",
-        "ULTRACEMCO", "BAJAJFINSV", "JSWSTEEL", "GRASIM", "HDFCLIFE", "BPCL", "HINDALCO", "WIPRO", "NESTLEIND",
-        "IOC", "EICHERMOT", "DIVISLAB", "DRREDDY", "TECHM", "CIPLA", "SBILIFE", "BRITANNIA", "TATACONSUM",
-        "BAJAJ-AUTO", "APOLLOHOSP", "HEROMOTOCO", "ADANIPOWER", "BEL", "PFC", "RECLTD", "HAL", "JIOFIN", "DLF",
-        "ZOMATO", "TRENT", "VBL", "CHOLAFIN", "SHRIRAMFIN", "TATAELXSI", "ABB", "SIEMENS", "LUPIN", "TVSMOTOR",
-        "GAIL", "INDIANB", "BANKBARODA", "CANBK", "UNIONBANK", "IDFCFIRSTB", "SAIL", "NMDC", "BHEL", "NHPC",
-        "SJVN", "IRFC", "RVNL", "RAILTEL", "IRCON", "MAHABANK", "FEDERALBNK", "YESBANK", "SUZLON", "IDEA",
-        "GMRINFRA", "AWL", "MOTHERSON", "TATAPOWER", "PNB", "CGPOWER", "UPL", "NCC", "DELTACORP", "FINPIPE",
-        "CAMPUS", "TRIVENI", "BIOCON", "KIOCL", "GPIL", "JSWENERGY", "DELHIVERY", "REDINGTON", "ADANIGREEN",
-        "AVANTIFEED", "NLCINDIA", "STAR", "PETRONET", "CENTURYPLY", "IGL", "PNCINFRA", "STARCEMENT", "PPLPHARMA",
-        "JWL", "JINDWORLD", "HINDCOPPER", "RCF", "TTML", "VEDL", "OIL", "SAREGAMA", "MUTHOOTFIN", "NYKAA",
-        "RALLIS", "KARURVYSYA", "PCBL", "TANLA", "ENGINERSIN", "TRIDENT", "AMBUJACEM", "FINCABLES", "BBTC",
-        "ARVIND", "BANDHANBNK", "ABCAPITAL", "HFCL", "CUB"
-    ]
-    formatted_tickers = [f"{s}.NS" for s in universe_symbols]
+# --- MARKET-WIDE GAINERS / LOSERS FETCH FUNCTION ---
+@st.cache_data(ttl=120)
+def fetch_top_equity_movers(exchange="NSE", mode="gainers"):
+    """
+    Scrapes broad market top 30 movers from Moneycontrol across all caps (Micro, Small, Mid, Large).
+    """
+    url_map = {
+        ("NSE", "gainers"): "https://www.moneycontrol.com/india/stockmarket/price-gainers/nse",
+        ("NSE", "losers"): "https://www.moneycontrol.com/india/stockmarket/price-losers/nse",
+        ("BSE", "gainers"): "https://www.moneycontrol.com/india/stockmarket/price-gainers/bse",
+        ("BSE", "losers"): "https://www.moneycontrol.com/india/stockmarket/price-losers/bse"
+    }
     
+    target_url = url_map.get((exchange.upper(), mode.lower()))
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    symbols = []
     try:
-        data = yf.download(formatted_tickers, period="2d", interval="1d", progress=False)
-        if data.empty or 'Close' not in data.columns:
-            return [], []
+        response = requests.get(target_url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            tables = soup.find_all('table', {'class': 'responsive'}) or soup.find_all('table', {'class': 'mctable1'})
             
-        close_df = data['Close']
-        if len(close_df) < 2:
-            return [], []
-            
-        prev_close = close_df.iloc[-2]
-        latest_close = close_df.iloc[-1]
+            if tables:
+                df = pd.read_html(str(tables[0]))[0]
+                # Column 0 typically contains Company Name / Ticker details
+                company_col = df.columns[0]
+                raw_names = df[company_col].dropna().head(30).tolist()
+                
+                # Extract clean symbol keywords
+                for name in raw_names:
+                    clean_sym = str(name).split('\n')[0].split()[0].upper()
+                    clean_sym = ''.join(e for e in clean_sym if e.isalnum())
+                    if len(clean_sym) >= 2:
+                        symbols.append(clean_sym)
+    except Exception as e:
+        pass
         
-        pct_change = ((latest_close - prev_close) / prev_close) * 100
-        pct_change = pct_change.dropna()
-        
-        gainers = pct_change.sort_values(ascending=False).head(30)
-        losers = pct_change.sort_values(ascending=True).head(30)
-        
-        top_gainers_list = [symbol.replace('.NS', '') for symbol in gainers.index]
-        top_losers_list = [symbol.replace('.NS', '') for symbol in losers.index]
-        
-        return top_gainers_list, top_losers_list
-    except Exception:
-        return [], []
-
-# Fetch Top Gainers/Losers dynamically
-top_gainers, top_losers = fetch_top_gainers_and_losers()
+    return symbols
 
 # --- INITIALIZE STATE FOR BOTH STRATEGIES ---
 if 'dual_trades' not in st.session_state:
     st.session_state.dual_trades = load_persistent_trades()
+
+# DEFAULT WATCHLIST STRING
+default_full_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
+
+if 'watchlist_input' not in st.session_state:
+    st.session_state.watchlist_input = default_full_list
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -120,14 +119,25 @@ with st.sidebar:
     use_lrc = st.checkbox("LRC Trend", value=True)
     
     st.markdown("---")
-    base_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
+    st.subheader("🔥 Top 30 Gainers & Losers (Overall Equity)")
+    mover_exchange = st.selectbox("Select Exchange Market", ["NSE", "BSE"], key="mover_exch")
+    mover_type = st.radio("Fetch Type", ["gainers", "losers"], key="mover_type", horizontal=True)
     
-    # Merge default base tickers with dynamically fetched Top Gainers/Losers
-    base_symbols = [s.strip().upper() for s in base_list.split(",") if s.strip()]
-    merged_symbols = list(dict.fromkeys(base_symbols + top_gainers + top_losers))
-    
-    full_list = ", ".join(merged_symbols)
-    user_input = st.text_area("Watchlist (Base + Top Gainers & Losers)", full_list)
+    if st.button("📥 Load Top Gainers/Losers to Watchlist"):
+        with st.spinner("Fetching overall equity movers..."):
+            fetched_syms = fetch_top_equity_movers(exchange=mover_exchange, mode=mover_type)
+            if fetched_syms:
+                current_list = [s.strip().upper() for s in st.session_state.watchlist_input.split(",") if s.strip()]
+                combined_list = list(dict.fromkeys(fetched_syms + current_list)) # Preserve order and remove duplicates
+                st.session_state.watchlist_input = ", ".join(combined_list)
+                st.success(f"Successfully added Top 30 {mover_type.title()} from {mover_exchange}!")
+                st.rerun()
+            else:
+                st.warning("Could not fetch symbols automatically at this moment.")
+
+    st.markdown("---")
+    user_input = st.text_area("Watchlist", st.session_state.watchlist_input, key="watchlist_input_area")
+    st.session_state.watchlist_input = user_input
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
     if st.button("🗑️ Reset All Trades (Both Layouts)"):
@@ -164,6 +174,7 @@ def process_strategy(data, is_reversed=False):
     results = []
     strategy_key = "reversed" if is_reversed else "regular"
     
+    # PERMANENT FIX: Safely scan actual existing columns instead of levels
     actual_present_tickers = set([col[0] for col in data.columns])
     
     for symbol in SYMBOLS:
@@ -172,7 +183,7 @@ def process_strategy(data, is_reversed=False):
         
         try:
             df = data[t_str].dropna(subset=['Close', 'Open', 'High', 'Low'])
-            if len(df) < 25: continue
+            if len(df) < 25: continue  # Ensure baseline tracking elements exist
 
             cmp = float(df['Close'].iloc[-1])
             c_open = float(df['Open'].iloc[-1])
@@ -231,6 +242,7 @@ def process_strategy(data, is_reversed=False):
             else:
                 trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
             
+            # ADX BLOCK PROTECTION
             high, low, close = df['High'], df['Low'], df['Close']
             prev_high, prev_low, prev_close = high.shift(1), low.shift(1), close.shift(1)
             
@@ -338,7 +350,7 @@ def process_strategy(data, is_reversed=False):
                 "Prob": p_text, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val), "TradeType": t_type
             })
         except Exception:
-            continue
+            continue # If an isolated ticker has corrupt shapes or values, skip it gracefully
             
     if not results: return pd.DataFrame()
     df_out = pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
