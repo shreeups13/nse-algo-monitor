@@ -43,27 +43,26 @@ def is_market_open():
     if start_time <= now <= end_time: return True, "🟢 MARKET LIVE"
     return False, "🔴 MARKET CLOSED (OUT OF HOURS)"
 
-# --- FETCH TOP 30 GAINERS & LOSERS FROM NSE ---
+# --- AUTOMATIC TOP GAINERS & LOSERS FETCH ---
 @st.cache_data(ttl=300)
 def fetch_top_gainers_and_losers():
-    """Fetches Top 30 Gainers and Top 30 Losers from Nifty 500 stocks dynamically using yfinance."""
-    # Nifty 500 / Liquid NSE tickers base
+    """Dynamically fetches Top Gainers and Top Losers from NSE liquid universe."""
     universe_symbols = [
         "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY", "BHARTIARTL", "ITC", "SBIN", "LTIM", "LODHA",
         "HINDUNILVR", "LT", "BAJFINANCE", "HCLTECH", "MARUTI", "SUNPHARMA", "ADANIENT", "KOTAKBANK", "TITAN",
         "ONGC", "TATAMOTORS", "NTPC", "AXISBANK", "ADANIPORTS", "COALINDIA", "POWERGRID", "TATASTEEL", "M&M",
         "ULTRACEMCO", "BAJAJFINSV", "JSWSTEEL", "GRASIM", "HDFCLIFE", "BPCL", "HINDALCO", "WIPRO", "NESTLEIND",
-        "IOC", "EICHERMOT", "DIVISLAB", "DRREDDY", "TECHM", "CIPLA", "SBI LIFE", "BRITANNIA", "TATACONSUM",
+        "IOC", "EICHERMOT", "DIVISLAB", "DRREDDY", "TECHM", "CIPLA", "SBILIFE", "BRITANNIA", "TATACONSUM",
         "BAJAJ-AUTO", "APOLLOHOSP", "HEROMOTOCO", "ADANIPOWER", "BEL", "PFC", "RECLTD", "HAL", "JIOFIN", "DLF",
-        "ZOMATO", "TRENT", "VBL", "CHOLAFIN", "SHRIRAMFIN", "TATAELXSI", "ABB", "SIEMENS", "TIRUMALCHM",
-        "LUPIN", "TVSMOTOR", "GAIL", "INDIANB", "BANKBARODA", "CANBK", "UNIONBANK", "IDFCFIRSTB", "SAIL",
-        "NMDC", "BHEL", "NHPC", "SJVN", "IRFC", "RVNL", "RAILTEL", "IRCON", "MAHABANK", "FEDERALBNK",
-        "YESBANK", "SUZLON", "IDEA", "GMRINFRA", "AWL", "MOTHERSON", "TATAPOWER", "PNB", "CGPOWER", "UPL",
-        "NCC", "DELTACORP", "FINPIPE", "CAMPUS", "TRIVENI", "BIOCON", "KIOCL", "GPIL", "JSWENERGY", "DELHIVERY",
-        "REDINGTON", "ADANIGREEN", "AVANTIFEED", "NLCINDIA", "STAR", "PETRONET", "CENTURYPLY", "IGL",
-        "PNCINFRA", "STARCEMENT", "PPLPHARMA", "JWL", "JINDWORLD", "HINDCOPPER", "RCF", "TTML", "VEDL",
-        "OIL", "SAREGAMA", "MUTHOOTFIN", "NYKAA", "RALLIS", "KARURVYSYA", "PCBL", "TANLA", "ENGINERSIN",
-        "TRIDENT", "AMBUJACEM", "FINCABLES", "BBTC", "ARVIND", "BANDHANBNK", "ABCAPITAL", "HFCL", "CUB"
+        "ZOMATO", "TRENT", "VBL", "CHOLAFIN", "SHRIRAMFIN", "TATAELXSI", "ABB", "SIEMENS", "LUPIN", "TVSMOTOR",
+        "GAIL", "INDIANB", "BANKBARODA", "CANBK", "UNIONBANK", "IDFCFIRSTB", "SAIL", "NMDC", "BHEL", "NHPC",
+        "SJVN", "IRFC", "RVNL", "RAILTEL", "IRCON", "MAHABANK", "FEDERALBNK", "YESBANK", "SUZLON", "IDEA",
+        "GMRINFRA", "AWL", "MOTHERSON", "TATAPOWER", "PNB", "CGPOWER", "UPL", "NCC", "DELTACORP", "FINPIPE",
+        "CAMPUS", "TRIVENI", "BIOCON", "KIOCL", "GPIL", "JSWENERGY", "DELHIVERY", "REDINGTON", "ADANIGREEN",
+        "AVANTIFEED", "NLCINDIA", "STAR", "PETRONET", "CENTURYPLY", "IGL", "PNCINFRA", "STARCEMENT", "PPLPHARMA",
+        "JWL", "JINDWORLD", "HINDCOPPER", "RCF", "TTML", "VEDL", "OIL", "SAREGAMA", "MUTHOOTFIN", "NYKAA",
+        "RALLIS", "KARURVYSYA", "PCBL", "TANLA", "ENGINERSIN", "TRIDENT", "AMBUJACEM", "FINCABLES", "BBTC",
+        "ARVIND", "BANDHANBNK", "ABCAPITAL", "HFCL", "CUB"
     ]
     formatted_tickers = [f"{s}.NS" for s in universe_symbols]
     
@@ -82,7 +81,6 @@ def fetch_top_gainers_and_losers():
         pct_change = ((latest_close - prev_close) / prev_close) * 100
         pct_change = pct_change.dropna()
         
-        # Sort top gainers & losers
         gainers = pct_change.sort_values(ascending=False).head(30)
         losers = pct_change.sort_values(ascending=True).head(30)
         
@@ -93,7 +91,7 @@ def fetch_top_gainers_and_losers():
     except Exception:
         return [], []
 
-# Fetch Top Gainers/Losers
+# Fetch Top Gainers/Losers dynamically
 top_gainers, top_losers = fetch_top_gainers_and_losers()
 
 # --- INITIALIZE STATE FOR BOTH STRATEGIES ---
@@ -122,16 +120,14 @@ with st.sidebar:
     use_lrc = st.checkbox("LRC Trend", value=True)
     
     st.markdown("---")
-    base_watchlist = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
+    base_list = "UPL, COALINDIA, POWERGRID, ITC, NCC, DELTACORP, TATASTEEL, WIPRO, ONGC, HDFCLIFE, HINDALCO, BPCL, ADANIPOWER, FINPIPE, CAMPUS, TRIVENI, BIOCON, IRFC, KIOCL, GPIL, JSWENERGY, DELHIVERY, REDINGTON, ADANIGREEN, AVANTIFEED, SJVN, NLCINDIA, STAR, RAILTEL, PETRONET, SUZLON, CENTURYPLY, IGL, PNCINFRA, STARCEMENT, PPLPHARMA, JWL, JINDWORLD, HINDCOPPER, RCF, TTML, VEDL, UNIONBANK, OIL, SAREGAMA, INFY, MUTHOOTFIN, NYKAA, RALLIS, NESTLEIND, KARURVYSYA, RELIANCE, IOC, PCBL, ADANIPORTS, TANLA, GRASIM, ENGINERSIN, FEDERALBNK, TRIDENT, MOTHERSON, AMBUJACEM, FINCABLES, NMDC, TATAPOWER, BBTC, ARVIND, BANDHANBNK, ABCAPITAL, HFCL, PFC, BEL, PNB, CGPOWER, CUB"
     
-    # Merge base list with Top 30 Gainers and Top 30 Losers smoothly
-    combined_watchlist_list = [s.strip().upper() for s in base_watchlist.split(",") if s.strip()]
-    for stock in top_gainers + top_losers:
-        if stock not in combined_watchlist_list:
-            combined_watchlist_list.append(stock)
-            
-    full_list = ", ".join(combined_watchlist_list)
-    user_input = st.text_area("Watchlist (Includes Base + Top 30 Gainers & Losers)", full_list)
+    # Merge default base tickers with dynamically fetched Top Gainers/Losers
+    base_symbols = [s.strip().upper() for s in base_list.split(",") if s.strip()]
+    merged_symbols = list(dict.fromkeys(base_symbols + top_gainers + top_losers))
+    
+    full_list = ", ".join(merged_symbols)
+    user_input = st.text_area("Watchlist (Base + Top Gainers & Losers)", full_list)
     SYMBOLS = [s.strip().upper() for s in user_input.split(",") if s.strip()]
     
     if st.button("🗑️ Reset All Trades (Both Layouts)"):
