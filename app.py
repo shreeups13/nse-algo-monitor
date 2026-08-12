@@ -59,6 +59,7 @@ with st.sidebar:
     filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.36, step=0.01, format="%.2f")
     filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.36, step=0.01, format="%.2f")
     filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
+    filter_status = st.selectbox("Status Filter", ["All", "Buy", "Sell", "Buy & Sell", "In Trade", "Waiting"])
     
     st.markdown("---")
     st.subheader("🛠️ Indicators")
@@ -275,6 +276,13 @@ def process_strategy(data, is_reversed=False):
             if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell": continue
             if filter_trade_type == "S.Buy & S.Sell" and trade_cond not in ["S.Buy", "S.Sell"]: continue
             if filter_trade_type == "Blank Only" and trade_cond != "-": continue
+
+            # --- STATUS FILTER LOGIC ---
+            if filter_status == "Buy" and "BUY" not in status: continue
+            if filter_status == "Sell" and "SELL" not in status: continue
+            if filter_status == "Buy & Sell" and ("BUY" not in status and "SELL" not in status): continue
+            if filter_status == "In Trade" and status != "IN TRADE": continue
+            if filter_status == "Waiting" and status != "WAITING": continue
 
             results.append({
                 "Stock": flag + symbol, "Trade": trade_flag + trade_cond, "Qty": f"{qty_flag}{int(capital // cmp)}", 
