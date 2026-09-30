@@ -1,5 +1,3 @@
-#21.07.26 currently working 
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -56,6 +54,8 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("🎯 Custom Filters")
+    filter_min_price = st.number_input("Min Stock Price (₹)", value=0.0, step=10.0, format="%.2f")
+    filter_max_price = st.number_input("Max Stock Price (₹)", value=100000.0, step=100.0, format="%.2f")
     filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.36, step=0.01, format="%.2f")
     filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.36, step=0.01, format="%.2f")
     filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
@@ -122,6 +122,10 @@ def process_strategy(data, is_reversed=False):
             cmp = float(df['Close'].iloc[-1])
             c_open = float(df['Open'].iloc[-1])
             
+            # --- PRICE FILTER ---
+            if cmp < filter_min_price or cmp > filter_max_price:
+                continue
+
             sigs = []
             prob_score = 0
             
@@ -269,6 +273,7 @@ def process_strategy(data, is_reversed=False):
                 elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Sell"
                 else: trade_cond = "-"
 
+            # --- ROC FILTER ---
             if roc_val >= 0 and roc_val < filter_roc_gt: continue
             if roc_val < 0 and roc_val > -filter_roc_lt: continue
 
