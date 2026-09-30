@@ -224,14 +224,24 @@ def process_strategy(data, is_reversed=False):
             e_time = ist_now.strftime("%H:%M")
             t_type = trade.get('type') if trade else None
             
+            # --- MODIFIED: NO AUTO-EXIT / AUTO-DELETION LOGIC ---
             if trade:
                 status = "IN TRADE"
                 e_time = trade.get('time', e_time)
                 p_text = trade.get('prob_text', "MED")
-                if (trade['type'] == 'BUY' and (cmp >= trade['target'] or cmp <= trade['sl'])) or \
-                   (trade['type'] == 'SELL' and (cmp <= trade['target'] or cmp >= trade['sl'])):
-                    del st.session_state.dual_trades[strategy_key][symbol]
-                    save_persistent_trades(st.session_state.dual_trades)
+                
+                # Visual status tags for target or SL hits (without deleting trade)
+                if trade['type'] == 'BUY':
+                    if cmp >= trade['target']:
+                        status = "🎯 TARGET HIT"
+                    elif cmp <= trade['sl']:
+                        status = "🛑 SL HIT"
+                elif trade['type'] == 'SELL':
+                    if cmp <= trade['target']:
+                        status = "🎯 TARGET HIT"
+                    elif cmp >= trade['sl']:
+                        status = "🛑 SL HIT"
+
             elif vol_surge:
                 if not is_reversed:
                     if cmp > c_open and lrc_dir == "UP":
@@ -284,7 +294,7 @@ def process_strategy(data, is_reversed=False):
             if filter_status == "Buy" and "BUY" not in status: continue
             if filter_status == "Sell" and "SELL" not in status: continue
             if filter_status == "Buy & Sell" and ("BUY" not in status and "SELL" not in status): continue
-            if filter_status == "In Trade" and status != "IN TRADE": continue
+            if filter_status == "In Trade" and "IN TRADE" not in status and "HIT" not in status: continue
             if filter_status == "Waiting" and status != "WAITING": continue
 
             results.append({
@@ -311,7 +321,7 @@ except Exception:
 def apply_dynamic_styles(df):
     styles = pd.DataFrame('', index=df.index, columns=df.columns)
     for i, row in df.iterrows():
-        if row['Status'] == "IN TRADE":
+        if "IN TRADE" in str(row['Status']) or "HIT" in str(row['Status']):
             row_bg = '#c6f6d5' if row['TradeType'] == 'BUY' else '#fed7d7'
             styles.loc[i, :] = f'background-color: {row_bg}; color: black; font-weight: 500'
             
@@ -332,8 +342,8 @@ df_rev = process_strategy(raw_market_data, is_reversed=True) if isinstance(raw_m
 st.markdown("---")
 st.header("🪟 1) TRADE WINDOW")
 
-active_reg = df_reg[df_reg['Status'] == "IN TRADE"] if not df_reg.empty else pd.DataFrame()
-active_rev = df_rev[df_rev['Status'] == "IN TRADE"] if not df_rev.empty else pd.DataFrame()
+active_reg = df_reg[df_reg['Status'].str.contains("IN TRADE|HIT", regex=True, na=False)] if not df_reg.empty else pd.DataFrame()
+active_rev = df_rev[df_rev['Status'].str.contains("IN TRADE|HIT", regex=True, na=False)] if not df_rev.empty else pd.DataFrame()
 
 if not active_reg.empty or not active_rev.empty:
     combined_trades = pd.concat([active_reg, active_rev], ignore_index=True)
