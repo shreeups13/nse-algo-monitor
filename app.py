@@ -1,3 +1,4 @@
+#30.09.26 testing 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
