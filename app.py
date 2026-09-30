@@ -54,8 +54,8 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("🎯 Custom Filters")
-    filter_min_price = st.number_input("Min Stock Price (₹)", value=30, step=10.0, format="%.2f")
-    filter_max_price = st.number_input("Max Stock Price (₹)", value=700, step=100.0, format="%.2f")
+    filter_min_price = st.number_input("Min Stock Price (₹)", min_value=0.0, value=0.0, step=10.0, format="%.2f")
+    filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=100000.0, step=100.0, format="%.2f")
     filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.36, step=0.01, format="%.2f")
     filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.36, step=0.01, format="%.2f")
     filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
@@ -108,7 +108,6 @@ def process_strategy(data, is_reversed=False):
     results = []
     strategy_key = "reversed" if is_reversed else "regular"
     
-    # PERMANENT FIX: Safely scan actual existing columns instead of levels
     actual_present_tickers = set([col[0] for col in data.columns])
     
     for symbol in SYMBOLS:
@@ -117,7 +116,7 @@ def process_strategy(data, is_reversed=False):
         
         try:
             df = data[t_str].dropna(subset=['Close', 'Open', 'High', 'Low'])
-            if len(df) < 25: continue  # Ensure baseline tracking elements exist
+            if len(df) < 25: continue
 
             cmp = float(df['Close'].iloc[-1])
             c_open = float(df['Open'].iloc[-1])
@@ -180,7 +179,6 @@ def process_strategy(data, is_reversed=False):
             else:
                 trade_flag = "🟢 " if lrc2 > avg_price else "🔴 "
             
-            # ADX BLOCK PROTECTION
             high, low, close = df['High'], df['Low'], df['Close']
             prev_high, prev_low, prev_close = high.shift(1), low.shift(1), close.shift(1)
             
@@ -296,7 +294,7 @@ def process_strategy(data, is_reversed=False):
                 "Prob": p_text, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val), "TradeType": t_type
             })
         except Exception:
-            continue # If an isolated ticker has corrupt shapes or values, skip it gracefully
+            continue
             
     if not results: return pd.DataFrame()
     df_out = pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
