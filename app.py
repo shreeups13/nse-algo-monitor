@@ -57,8 +57,8 @@ with st.sidebar:
     st.subheader("🎯 Custom Filters")
     filter_min_price = st.number_input("Min Stock Price (₹)", min_value=0.0, value=30.0, step=10.0, format="%.2f")
     filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=1000.0, step=100.0, format="%.2f")
-    filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=1.36, step=0.01, format="%.2f")
-    filter_roc_lt = st.number_input("ROC Less Than (<) %", value=1.36, step=0.01, format="%.2f")
+    filter_roc_gt = st.number_input("ROC Greater Than (>) %", value=2.00, step=0.01, format="%.2f")
+    filter_roc_lt = st.number_input("ROC Less Than (<) %", value=2.00, step=0.01, format="%.2f")
     filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
     filter_status = st.selectbox("Status Filter", ["All", "Buy", "Sell", "Buy & Sell", "In Trade", "Waiting"])
     
