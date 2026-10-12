@@ -57,8 +57,15 @@ with st.sidebar:
     st.subheader("🎯 Custom Filters")
     filter_min_price = st.number_input("Min Stock Price (₹)", min_value=0.0, value=30.0, step=10.0, format="%.2f")
     filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=1000.0, step=100.0, format="%.2f")
-    filter_roc_min = st.number_input("ROC Min (%)", value=1.00, step=0.01, format="%.2f")
-    filter_roc_max = st.number_input("ROC Max (%)", value=5.00, step=0.01, format="%.2f")
+    
+    st.markdown("**📈 Positive ROC Range (%)**")
+    filter_pos_roc_min = st.number_input("Pos ROC Min", value=1.00, step=0.01, format="%.2f")
+    filter_pos_roc_max = st.number_input("Pos ROC Max", value=5.00, step=0.01, format="%.2f")
+    
+    st.markdown("**📉 Negative ROC Range (%)**")
+    filter_neg_roc_min = st.number_input("Neg ROC Min (e.g. -5.0)", value=-5.00, step=0.01, format="%.2f")
+    filter_neg_roc_max = st.number_input("Neg ROC Max (e.g. -1.0)", value=-1.00, step=0.01, format="%.2f")
+    
     filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
     filter_status = st.selectbox("Status Filter", ["All", "Buy", "Sell", "Buy & Sell", "In Trade", "Waiting"])
     
@@ -282,10 +289,13 @@ def process_strategy(data, is_reversed=False):
                 elif p_text == "HIGH" and roc_val > 0 and lrc_dir == "UP" and ma_up and ema_up: trade_cond = "S.Sell"
                 else: trade_cond = "-"
 
-            # --- ROC FILTER (Between Min and Max for both positive and negative values) ---
-            abs_roc = abs(roc_val)
-            if not (filter_roc_min <= abs_roc <= filter_roc_max):
-                continue
+            # --- SEPARATE ROC FILTERS FOR POSITIVE AND NEGATIVE VALUES ---
+            if roc_val >= 0:
+                if not (filter_pos_roc_min <= roc_val <= filter_pos_roc_max):
+                    continue
+            else:
+                if not (filter_neg_roc_min <= roc_val <= filter_neg_roc_max):
+                    continue
 
             if filter_trade_type == "S.Buy Only" and trade_cond != "S.Buy": continue
             if filter_trade_type == "S.Sell Only" and trade_cond != "S.Sell": continue
