@@ -59,12 +59,12 @@ with st.sidebar:
     filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=1000.0, step=100.0, format="%.2f")
     
     st.markdown("**📈 Positive ROC Range (%)**")
-    filter_pos_roc_min = st.number_input("Pos ROC Min", value=1.36, step=0.01, format="%.2f")
-    filter_pos_roc_max = st.number_input("Pos ROC Max", value=2.00, step=0.01, format="%.2f")
+    filter_pos_roc_min = st.number_input("Pos ROC Min", value=1.85, step=0.01, format="%.2f")
+    filter_pos_roc_max = st.number_input("Pos ROC Max", value=2.30, step=0.01, format="%.2f")
     
     st.markdown("**📉 Negative ROC Range (%)**")
-    filter_neg_roc_min = st.number_input("Neg ROC Min (e.g. -5.0)", value=-2.00, step=0.01, format="%.2f")
-    filter_neg_roc_max = st.number_input("Neg ROC Max (e.g. -1.0)", value=-1.36, step=0.01, format="%.2f")
+    filter_neg_roc_min = st.number_input("Neg ROC Min (e.g. -5.0)", value=-2.30, step=0.01, format="%.2f")
+    filter_neg_roc_max = st.number_input("Neg ROC Max (e.g. -1.0)", value=-1.85, step=0.01, format="%.2f")
     
     filter_trade_type = st.selectbox("Trade Type Filter", ["All", "S.Buy Only", "S.Sell Only", "S.Buy & S.Sell", "Blank Only"])
     filter_status = st.selectbox("Status Filter", ["All", "Buy", "Sell", "Buy & Sell", "In Trade", "Waiting"])
