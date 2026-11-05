@@ -54,7 +54,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("🕸️ Web Confluence Filters")
-    min_web_score = st.slider("Min Interlock Nodes Required" , 3, 5, 4)
+    min_web_score = st.slider("Min Interlock Nodes Required" ,2, 3, 4, 5)
     filter_min_price = st.number_input("Min Stock Price (₹)", min_value=0.0, value=50.0, step=10.0)
     filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=2000.0, step=100.0)
     
