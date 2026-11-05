@@ -56,7 +56,7 @@ with st.sidebar:
     st.subheader("⚡ Core Entry Controls")
     vol_multiplier = st.slider("Min Volume Surge vs MA(10)", 1.0, 2.5, 1.15, step=0.05)
     filter_min_price = st.number_input("Min Stock Price (₹)", min_value=0.0, value=30.0, step=10.0)
-    filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=2000.0, step=100.0)
+    filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=1000.0, step=100.0)
     
     st.markdown("**📈 ROC Velocity Filter (%)**")
     filter_roc_min = st.number_input("ROC Min", value=0.50, step=0.01)
