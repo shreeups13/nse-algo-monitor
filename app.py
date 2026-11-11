@@ -1,4 +1,4 @@
-# #NSE Pro Monitor v5.1 - Core + Flex Momentum Engine
+# #NSE Pro Monitor v5.2 - Zero-Lag Breakout Engine
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,9 +9,9 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v5.1 (Core+Flex)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="NSE Pro Monitor v5.2 (Zero-Lag Breakout)", layout="wide", page_icon="⚡")
 
-TRADES_FILE = "trade_history_dual_v51.json"
+TRADES_FILE = "trade_history_dual_v52.json"
 
 def load_persistent_trades():
     if os.path.exists(TRADES_FILE):
@@ -53,14 +53,10 @@ with st.sidebar:
     sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
     
     st.markdown("---")
-    st.subheader("⚡ Core Entry Controls")
-    vol_multiplier = st.slider("Min Volume Surge vs MA(10)", 1.0, 2.5, 1.15, step=0.05)
+    st.subheader("⚡ Zero-Lag Breakout Controls")
+    vol_multiplier = st.slider("Volume Surge Multiplier vs MA(10)", 1.0, 2.5, 1.15, step=0.05)
     filter_min_price = st.number_input("Min Stock Price (₹)", min_value=0.0, value=30.0, step=10.0)
-    filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=1000.0, step=100.0)
-    
-    st.markdown("**📈 ROC Velocity Filter (%)**")
-    filter_roc_min = st.number_input("ROC Min", value=0.50, step=0.01)
-    filter_roc_max = st.number_input("ROC Max", value=5.00, step=0.01)
+    filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=2000.0, step=100.0)
     
     filter_status = st.selectbox("Status Filter", ["All", "In Trade", "Target Hit", "SL Hit", "Waiting"])
     
@@ -95,8 +91,8 @@ except Exception:
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 
-# --- CORE STRATEGY CALCULATIONS ---
-def process_core_flex_strategy(data, is_reversed=False):
+# --- ZERO-LAG BREAKOUT STRATEGY CORE ---
+def process_zero_lag_strategy(data, is_reversed=False):
     if data.empty or not isinstance(data.columns, pd.MultiIndex): return pd.DataFrame()
     results = []
     strategy_key = "reversed" if is_reversed else "regular"
@@ -108,66 +104,25 @@ def process_core_flex_strategy(data, is_reversed=False):
         
         try:
             df = data[t_str].dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-            if len(df) < 25: continue
+            if len(df) < 15: continue
 
             cmp = float(df['Close'].iloc[-1])
-            c_open = float(df['Open'].iloc[-1])
             
             if cmp < filter_min_price or cmp > filter_max_price: continue
 
-            # --- CORE TRIGGER (PRICE ACTION + VOLUME EXPANSION) ---
+            # --- ZERO-LAG BREAKOUT TRIGGER LOGIC ---
+            prev_high = float(df['High'].iloc[-2])
+            prev_low = float(df['Low'].iloc[-2])
+            
             vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
-            vol_surge = df['Volume'].iloc[-1] >= (vol_avg * vol_multiplier)
-            
-            p5 = df['Close'].iloc[-6] if len(df) >= 6 else df['Close'].iloc[0]
-            roc_val = ((cmp - p5) / p5) * 100
-            
-            if not (filter_roc_min <= abs(roc_val) <= filter_roc_max): continue
+            current_vol = float(df['Volume'].iloc[-1])
+            is_vol_surging = current_vol >= (vol_avg * vol_multiplier)
 
-            # --- FLEX CONFIRMATION NODES (CALCULATE WEIGHTED SCORE) ---
-            flex_score = 0
-            sigs = []
+            # Instant breakout validation
+            is_breakout_buy = (cmp > prev_high) and is_vol_surging
+            is_breakout_sell = (cmp < prev_low) and is_vol_surging
 
-            # Flex Node 1: Moving Average Trend Alignment
-            ema9 = df['Close'].ewm(span=9).mean().iloc[-1]
-            ema21 = df['Close'].ewm(span=21).mean().iloc[-1]
-            if (not is_reversed and cmp > ema9 > ema21) or (is_reversed and cmp < ema9 < ema21):
-                flex_score += 1
-                sigs.append("✓EMA Alignment")
-
-            # Flex Node 2: Trend Strength (ADX)
-            high, low, close = df['High'], df['Low'], df['Close']
-            prev_close = close.shift(1)
-            tr = np.nanmax(np.column_stack([(high - low), np.abs(high - prev_close), np.abs(low - prev_close)]), axis=1)
-            up_move = high - high.shift(1)
-            down_move = low.shift(1) - low
-            plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-            minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-            tr_s = pd.Series(tr).rolling(14).sum()
-            p_di = 100 * (pd.Series(plus_dm).rolling(14).sum() / np.where(tr_s == 0, 1e-9, tr_s))
-            m_di = 100 * (pd.Series(minus_dm).rolling(14).sum() / np.where(tr_s == 0, 1e-9, tr_s))
-            adx = float(100 * (np.abs(p_di - m_di) / np.where((p_di + m_di) == 0, 1e-9, (p_di + m_di))).rolling(14).mean().iloc[-1])
-            
-            if adx > 20.0:
-                flex_score += 1
-                sigs.append(f"ADX:{adx:.1f}")
-
-            # Flex Node 3: Volume Surge Magnitude
-            if vol_surge:
-                flex_score += 1
-                sigs.append(f"⚡Vol({df['Volume'].iloc[-1] / vol_avg:.1f}x)")
-
-            # Flex Node 4: Linear Regression Channel (LRC Slope)
-            y = df['Close'].tail(14).values
-            slope, intercept = np.polyfit(np.arange(len(y)), y, 1)
-            lrc_dir = "UP" if slope > 0 else "DOWN"
-            if (not is_reversed and slope > 0) or (is_reversed and slope < 0):
-                flex_score += 1
-                sigs.append(f"LRC:{lrc_dir}")
-
-            confidence_label = "⭐" * flex_score if flex_score > 0 else "⚪ Low"
-
-            # --- TRADE STATE MONITORING ---
+            # --- TRADE STATE MONITORING & PERSISTENCE ---
             trade = st.session_state.dual_trades[strategy_key].get(symbol)
             status = "WAITING"
             e_time = ist_now.strftime("%H:%M")
@@ -182,21 +137,28 @@ def process_core_flex_strategy(data, is_reversed=False):
                 elif trade['type'] == 'SELL':
                     if cmp <= trade['target']: status = "🎯 TARGET HIT"
                     elif cmp >= trade['sl']: status = "🛑 SL HIT"
-            elif vol_surge: # Core entry condition met
+            else:
+                # Determine initial trade type based on breakout
+                detected_type = None
                 if not is_reversed:
-                    t_type = "BUY" if cmp > c_open else "SELL"
+                    if is_breakout_buy: detected_type = "BUY"
+                    elif is_breakout_sell: detected_type = "SELL"
                 else:
-                    t_type = "SELL" if cmp > c_open else "BUY"
-                
-                entry = cmp
-                target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
-                sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
-                
-                st.session_state.dual_trades[strategy_key][symbol] = {
-                    'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
-                    'time': e_time, 'score': flex_score
-                }
-                save_persistent_trades(st.session_state.dual_trades)
+                    if is_breakout_buy: detected_type = "SELL"
+                    elif is_breakout_sell: detected_type = "BUY"
+
+                if detected_type:
+                    t_type = detected_type
+                    entry = cmp
+                    target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
+                    sl = (min(float(df['Low'].iloc[-1]), prev_low) * 0.998) if t_type == "BUY" else (max(float(df['High'].iloc[-1]), prev_high) * 1.002)
+                    
+                    st.session_state.dual_trades[strategy_key][symbol] = {
+                        'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
+                        'time': e_time
+                    }
+                    save_persistent_trades(st.session_state.dual_trades)
+                    status = "IN TRADE"
 
             if filter_status != "All":
                 if filter_status == "In Trade" and "IN TRADE" not in status: continue
@@ -206,16 +168,15 @@ def process_core_flex_strategy(data, is_reversed=False):
 
             results.append({
                 "Stock": f"⚡ {symbol}", "Trade": f"{'🟢' if t_type=='BUY' else '🔴'} {t_type}" if t_type else "⏳ Ready",
-                "Qty": int(capital // cmp), "CMP": cmp, "Entry": trade['entry'] if trade else 0.0,
+                "Qty": int(capital // cmp), "CMP": cmp, "Entry": trade['entry'] if trade else (cmp if t_type else 0.0),
                 "SL": trade['sl'] if trade else 0.0, "Target": trade['target'] if trade else 0.0,
-                "Confidence": confidence_label, "Signal Details": " | ".join(sigs) if sigs else "Core Trigger Only",
-                "Status": status, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val)
+                "Status": status, "Time": e_time, "InTrade": 1 if trade or t_type else 0
             })
         except Exception:
             continue
             
     if not results: return pd.DataFrame()
-    return pd.DataFrame(results).sort_values(by=["InTrade", "ROC_Val"], ascending=False).drop(columns=["InTrade", "ROC_Val"])
+    return pd.DataFrame(results).sort_values(by=["InTrade"], ascending=False).drop(columns=["InTrade"])
 
 # --- EXECUTION FETCH ---
 tickers = [f"{s}.NS" for s in SYMBOLS]
@@ -235,14 +196,14 @@ def apply_dynamic_styles(df):
             styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
     return styles
 
-columns_show = ["Stock", "Trade", "Qty", "CMP", "Confidence", "Signal Details", "Entry", "SL", "Target", "Status", "Time"]
+columns_show = ["Stock", "Trade", "Qty", "CMP", "Entry", "SL", "Target", "Status", "Time"]
 
-df_reg = process_core_flex_strategy(raw_market_data, is_reversed=False) if not raw_market_data.empty else pd.DataFrame()
-df_rev = process_core_flex_strategy(raw_market_data, is_reversed=True) if not raw_market_data.empty else pd.DataFrame()
+df_reg = process_zero_lag_strategy(raw_market_data, is_reversed=False) if not raw_market_data.empty else pd.DataFrame()
+df_rev = process_zero_lag_strategy(raw_market_data, is_reversed=True) if not raw_market_data.empty else pd.DataFrame()
 
 # --- DISPLAY INTERFACE ---
 st.markdown("---")
-st.header("🪟 Active Trade Window")
+st.header("🪟 Active Trade Window (Zero-Lag)")
 
 active_reg = df_reg[df_reg['Status'].str.contains("IN TRADE|HIT", regex=True, na=False)] if not df_reg.empty else pd.DataFrame()
 active_rev = df_rev[df_rev['Status'].str.contains("IN TRADE|HIT", regex=True, na=False)] if not df_rev.empty else pd.DataFrame()
@@ -251,7 +212,7 @@ if not active_reg.empty or not active_rev.empty:
     comb = pd.concat([active_reg, active_rev], ignore_index=True).drop_duplicates(subset=["Stock"])
     st.dataframe(comb.style.apply(apply_dynamic_styles, axis=None).format({"CMP": "{:.2f}", "Entry": "{:.2f}", "Target": "{:.2f}", "SL": "{:.2f}"}), use_container_width=True, hide_index=True, column_order=columns_show)
 else:
-    st.info("No active open positions currently.")
+    st.info("No active zero-lag breakout trades currently.")
 
 st.markdown("---")
 col1, col2 = st.columns(2)
@@ -261,14 +222,14 @@ with col1:
     if not df_reg.empty:
         st.dataframe(df_reg.style.apply(apply_dynamic_styles, axis=None).format({"CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-", "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"}), use_container_width=True, hide_index=True, column_order=columns_show)
     else:
-        st.caption("No tickers match standard filters right now.")
+        st.caption("No tickers matching regular breakout criteria.")
 
 with col2:
     st.subheader("🔄 Reversed Monitor")
     if not df_rev.empty:
         st.dataframe(df_rev.style.apply(apply_dynamic_styles, axis=None).format({"CMP": "{:.2f}", "Entry": lambda x: f"{x:.2f}" if x > 0 else "-", "Target": lambda x: f"{x:.2f}" if x > 0 else "-", "SL": lambda x: f"{x:.2f}" if x > 0 else "-"}), use_container_width=True, hide_index=True, column_order=columns_show)
     else:
-        st.caption("No tickers match reversal filters right now.")
+        st.caption("No tickers matching reversal breakout criteria.")
 
 time.sleep(60 if open_status else 300)
 st.rerun()
