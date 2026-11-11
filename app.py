@@ -1,425 +1,576 @@
+from datetime import date, datetime, timedelta
+import json
+import os
+import time
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 
-# ==========================================
-# 1. CORE ALGORITHMIC ENGINE
-# ==========================================
-
-
-class TradeRefinementEngine:
-
-  def __init__(
-      self,
-      df_daily: pd.DataFrame,
-      df_intraday: pd.DataFrame,
-      roc_threshold: float = 1.36,
-  ):
-    self.df_d = df_daily.copy()
-    self.df_i = df_intraday.copy()
-    self.roc_threshold = roc_threshold
-
-  def compute_htf_filters((self) -> dict:
-    """Evaluates Trend, Volatility, and Momentum filters on the Daily timeframe."""
-    close = self.df_d["Close"]
-    high = self.df_d["High"]
-    low = self.df_d["Low"]
-
-    # Trend Filter: Price > 50 EMA and 200 EMA
-    ema_50 = close.ewm(span=50, adjust=False).mean()
-    ema_200 = close.ewm(span=200, adjust=False).mean()
-    self.df_d["EMA_50"] = ema_50
-    self.df_d["EMA_200"] = ema_200
-
-    is_uptrend = (close.iloc[-1] > ema_50.iloc[-1]) and (
-        close.iloc[-1] > ema_200.iloc[-1]
-    )
-
-    # Volatility Filter: 14-period ATR > Average 30-day ATR
-    tr = np.maximum(
-        high - low,
-        np.maximum(abs(high - close.shift(1)), abs(low - close.shift(1))),
-    )
-    atr_14 = tr.rolling(window=14).mean()
-    avg_atr_30 = atr_14.rolling(window=30).mean()
-    self.df_d["ATR_14"] = atr_14
-    self.df_d["Avg_ATR_30"] = avg_atr_30
-
-    volatility_expanded = atr_14.iloc[-1] > avg_atr_30.iloc[-1]
-
-    # Momentum Filter: 10-period ROC > ROC Threshold
-    roc_10 = ((close - close.shift(10)) / close.shift(10)) * 100
-    self.df_d["ROC_10"] = roc_10
-    momentum_valid = roc_10.iloc[-1] > self.roc_threshold
-
-    passed_all = is_uptrend and volatility_expanded and momentum_valid
-
-    return {
-        "trend_valid": is_uptrend,
-        "volatility_expanded": volatility_expanded,
-        "momentum_valid": momentum_valid,
-        "htf_bias_approved": passed_all,
-        "current_roc": roc_10.iloc[-1],
-        "current_atr": atr_14.iloc[-1],
-        "ema_50": ema_50.iloc[-1],
-        "ema_200": ema_200.iloc[-1],
-    }
-
-  def calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
-    high = df["High"]
-    low = df["Low"]
-    close = df["Close"]
-    tr = np.maximum(
-        high - low,
-        np.maximum(abs(high - close.shift(1)), abs(low - close.shift(1))),
-    )
-    return tr.rolling(window=period).mean()
-
-  def identify_demand_zone_and_setup(self, lookback_bars: int = 20) -> dict:
-    recent_df = self.df_i.tail(lookback_bars)
-
-    zone_low = recent_df["Low"].min()
-    atr_15m = self.calculate_atr(self.df_i, period=14).iloc[-1]
-    cmp = self.df_i["Close"].iloc[-1]
-    trigger_high = self.df_i["High"].iloc[-2]
-
-    # Entry: Trigger High + 0.05% CMP offset
-    entry_price = trigger_high + (0.0005 * cmp)
-
-    # Invalidation Stop Loss: Zone Low - 0.5 * ATR(15m)
-    stop_loss = zone_low - (0.5 * atr_15m)
-
-    risk_per_share = entry_price - stop_loss
-    target_1 = entry_price + (2.0 * risk_per_share)
-    target_2 = entry_price + (3.5 * risk_per_share)
-
-    return {
-        "cmp": cmp,
-        "entry_price": round(entry_price, 2),
-        "stop_loss": round(stop_loss, 2),
-        "risk_per_share": round(risk_per_share, 2),
-        "target_1_50_pct": round(target_1, 2),
-        "target_2_remaining": round(target_2, 2),
-        "atr_15m": round(atr_15m, 2),
-        "zone_low": zone_low,
-    }
-
-
-# ==========================================
-# 2. MOCK DATA GENERATOR
-# ==========================================
-
-
-@st.cache_data
-def generate_market_data():
-  np.random.seed(42)
-  dates_d = pd.date_range(end=pd.Timestamp.today(), periods=250, freq="B")
-  df_daily = pd.DataFrame(
-      {
-          "Open": np.linspace(100, 150, 250) + np.random.normal(0, 1, 250),
-          "High": np.linspace(102, 153, 250) + np.random.normal(0, 1, 250),
-          "Low": np.linspace(98, 148, 250) + np.random.normal(0, 1, 250),
-          "Close": np.linspace(101, 151, 250) + np.random.normal(0, 1, 250),
-          "Volume": np.random.randint(100000, 500000, 250),
-      },
-      index=dates_d,
-  )
-
-  dates_i = pd.date_range(end=pd.Timestamp.today(), periods=100, freq="15min")
-  df_intraday = pd.DataFrame(
-      {
-          "Open": np.linspace(145, 151, 100) + np.random.normal(0, 0.2, 100),
-          "High": np.linspace(146, 152, 100) + np.random.normal(0, 0.2, 100),
-          "Low": np.linspace(144, 150, 100) + np.random.normal(0, 0.2, 100),
-          "Close": np.linspace(145, 151, 100) + np.random.normal(0, 0.2, 100),
-          "Volume": np.random.randint(10000, 50000, 100),
-      },
-      index=dates_i,
-  )
-
-  return df_daily, df_intraday
-
-
-# ==========================================
-# 3. STREAMLIT APPLICATION INTERFACE
-# ==========================================
-
+# --- CONFIGURATION ---
 st.set_page_config(
-    page_title="Trade Execution Engine", page_icon="⚡", layout="wide"
+    page_title="NSE Pro Monitor v5.0 (Trade Refinement Engine)",
+    layout="wide",
+    page_icon="📈",
 )
 
-st.title("⚡ Structural Trade Refinement & Execution Engine")
-st.markdown(
-    "Automated quantitative setup evaluation based on HTF trend alignment,"
-    " intraday demand zones, and ATR volatility buffers."
+TRADES_FILE = "trade_history_dual_refined.json"
+
+
+def load_persistent_trades():
+  if os.path.exists(TRADES_FILE):
+    try:
+      with open(TRADES_FILE, 'r') as f:
+        return json.load(f)
+    except:
+      return {'regular': {}, 'reversed': {}}
+  return {'regular': {}, 'reversed': {}}
+
+
+def save_persistent_trades(trades):
+  with open(TRADES_FILE, 'w') as f:
+    json.dump(trades, f)
+
+
+# --- MARKET CALENDAR 2026 ---
+NSE_HOLIDAYS = [
+    date(2026, 1, 26),
+    date(2026, 3, 3),
+    date(2026, 3, 26),
+    date(2026, 3, 31),
+    date(2026, 4, 3),
+    date(2026, 4, 14),
+    date(2026, 5, 1),
+    date(2026, 5, 28),
+    date(2026, 6, 26),
+    date(2026, 9, 14),
+    date(2026, 10, 2),
+    date(2026, 10, 20),
+    date(2026, 11, 10),
+    date(2026, 11, 24),
+    date(2026, 12, 25),
+]
+
+
+def get_ist():
+  return datetime.now() + timedelta(hours=5, minutes=30)
+
+
+def is_market_open():
+  now = get_ist()
+  if now.weekday() >= 5 or now.date() in NSE_HOLIDAYS:
+    return False, '🔴 MARKET CLOSED (WEEKEND/HOLIDAY)'
+  start_time, end_time = now.replace(hour=9, minute=15, second=0), now.replace(
+      hour=15, minute=30, second=0
+  )
+  if start_time <= now <= end_time:
+    return True, '🟢 MARKET LIVE'
+  return False, '🔴 MARKET CLOSED (OUT OF HOURS)'
+
+
+# --- INITIALIZE STATE FOR BOTH STRATEGIES ---
+if 'dual_trades' not in st.session_state:
+  st.session_state.dual_trades = load_persistent_trades()
+
+# --- SIDEBAR ---
+with st.sidebar:
+  st.header('⚙️ General Settings & Risk')
+  capital = st.number_input('Capital (₹)', min_value=1000, value=50000, step=5000)
+
+  st.markdown('---')
+  st.subheader('🎯 Custom Filters')
+  filter_min_price = st.number_input(
+      'Min Stock Price (₹)', min_value=0.0, value=30.0, step=10.0, format='%.2f'
+  )
+  filter_max_price = st.number_input(
+      'Max Stock Price (₹)',
+      min_value=0.0,
+      value=5000.0,
+      step=100.0,
+      format='%.2f',
+  )
+
+  st.markdown('**📈 Positive ROC Range (%) [10-Period]**')
+  filter_pos_roc_min = st.number_input(
+      'Pos ROC Min', value=1.36, step=0.05, format='%.2f'
+  )
+  filter_pos_roc_max = st.number_input(
+      'Pos ROC Max', value=10.0, step=0.1, format='%.2f'
+  )
+
+  st.markdown('**📉 Negative ROC Range (%) [10-Period]**')
+  filter_neg_roc_min = st.number_input(
+      'Neg ROC Min', value=-10.0, step=0.1, format='%.2f'
+  )
+  filter_neg_roc_max = st.number_input(
+      'Neg ROC Max', value=-1.36, step=0.05, format='%.2f'
+  )
+
+  filter_trade_type = st.selectbox(
+      'Trade Type Filter',
+      ['All', 'S.Buy Only', 'S.Sell Only', 'S.Buy & S.Sell', 'Blank Only'],
+  )
+  filter_status = st.selectbox(
+      'Status Filter',
+      ['All', 'Buy', 'Sell', 'Buy & Sell', 'In Trade', 'Waiting'],
+  )
+
+  st.markdown('---')
+  st.subheader('🛠️ Refinement Filters')
+  use_htf_ema = st.checkbox(
+      'HTF Trend Filter (Price > 50 & 200 EMA)', value=True
+  )
+  use_atr_volatility = st.checkbox(
+      'Volatility Filter (ATR14 > 30d Avg)', value=True
+  )
+  use_demand_zone = st.checkbox(
+      'Demand Zone Equilibrium Pullback (15m)', value=True
+  )
+
+  st.markdown('---')
+  full_list = (
+      'KOTAKBANK,HDFCBANK,RELIANCE,BSE,ICICIBANK,TARIL,M&M,INFY,BAJAJ-AUTO,'
+      'POLICYBZR,MARUTI,ADANIENSOL,BHARTIARTL,ETERNAL,AXISBANK,TATASTEEL,LT,'
+      'ADANIGREEN,CUPID,IDEA,APOLLOHOSP,TCS,SBIN,ADANIPOWER,MCX,COFORGE,'
+      'ULTRACEMCO,WELCORP,ADANIENT,JIOFIN,ATHERENERG,EICHERMOT,SBILIFE,HINDALCO,'
+      'ENRIN,HFCL,BAJFINANCE,WELSPUNLIV,BHEL,FORTIS,SHRIRAMFIN,STLTECH,DIVISLAB,'
+      'MAXHEALTH,TVSMOTOR,SAIL,POWERINDIA,RITES,HEROMOTOCO,TDPOWERSYS,HCLTECH,'
+      'TMPV,ITC,KALYANKJIL,SUNPHARMA,DLF,GRASIM,TECHM,CGPOWER,BAJAJFINSV,'
+      'SOLARINDS,BEL,JSWSTEEL,AZAD,ADANIPORTS,POLYCAB,HYUNDAI,MOTHERSON,'
+      'INDUSTOWER,VBL,FEDERALBNK,SUNTV,LEMONTREE,LENSKART,APLAPOLLO,HAL,NETWEB,'
+      'GVT&D,DIXON,SWIGGY,SYRMA,KAYNES,GROWW,PAYTM,NTPC,COALINDIA,DRREDDY,TITAN,'
+      'HINDCOPPER,PFC,ASHOKLEY,LICHSGFIN,TMCV,WIPRO,INDIGO,ONGC,ZYDUSLIFE,'
+      'INDHOTEL,LAURUSLABS,VAML,POWERGRID,SONACOMS,IFCI,CHOLAFIN,PERSISTENT,'
+      'NAUKRI,RECLTD,MPHASIS,HDFCAMC,VEDL,NYKAA,CHENNPETRO,DMART,LODHA,AUBANK,'
+      'ENGINERSIN,HINDUNILVR,APARINDS,ASIANPAINT,MANAPPURAM,PINELABS,TRENT,IRCON,'
+      'LICI,IDBI,GLENMARK,MTARTECH,RBLBANK,BOSCHLTD,BHARATFORG,HDFCLIFE,'
+      'NESTLEIND,MRPL,HAVELLS,BANKBARODA,SUZLON,PRESTIGE,OFSS,OLAELEC,'
+      'HINDPETRO,FORCEMOT,WAAREEENER,IDFCFIRSTB,BANDHANBNK,SANSERA,LTM,'
+      'CUMMINSIND,LTF,ABCAPITAL,ANGELONE,RADICO,SCHNEIDER,AUROPHARMA,LLOYDSME,'
+      'HINDZINC,TATACONSUM,BRITANNIA,TORNTPHARM,BPCL,YESBANK,LUPIN,JKCEMENT,'
+      'CANBK,CDSL,ABB,WOCKPHARMA,KIRLOSENG,IOC,MFSL,MOTILALOFS,INDUSINDBK,'
+      'NATIONALUM,PATANJALI,ALKEM,MUTHOOTFIN,NEULANDLAB,TATAPOWER,PAGEIND,'
+      'AEGISLOG,GMRAIRPORT,NUVAMA,KEI,BLUESTARCO,AMBUJACEM,MARICO,MEESHO,'
+      'MAZDOCK,INOXINDIA,UNITDSPR,UNIONBANK,DATAPATTNS,SHREECEM,UPL,NMDC,'
+      'PIDILITIND,PNB,360ONE,CIPLA,RVNL,GRAPHITE,ACUTAAS,GRSE,PFOCUS,PNBHOUSING,'
+      'JSWINFRA,VMM,GAIL,REDINGTON,TIINDIA,PREMIERENE,CUB,LALPATHLAB,HBLENGINE,'
+      'ASTERDM,PHOENIXLTD,MANKIND,IIFL,CAMS,TATAELXSI,BDL,KARURVYSYA,ZEEL,OIL,'
+      'IRFC,M&MFIN,KPITTECH,EXIDEIND,THERMAX,LGEINDIA,RRKABEL,HSCL,JINDALSTEL,'
+      'GLAND,COCHINSHIP,BIOCON,DABUR,CROMPTON,SIEMENS,WHIRLPOOL,SAMMAANCAP,'
+      'ONESOURCE,JSWENERGY,BELRISE,SAILIFE,ANANTRAJ,ESCORTS,UNOMINDA,GESHIP,'
+      'CARTRADE,AMBER,NCC,FINCABLES,SRF,TEGA,TEJASNET,VOGL,EMAMILTD,SHRIPISTON,'
+      'HONASA,NAM-INDIA,ZENSARTECH,GODREJPROP,KAJARIACER,TATACAP,NHPC,'
+      'NAVINFLUOR,MAHABANK,TATACHEM,ABDL,VISL,COLPAL,PWL,KFINTECH,PPLPHARMA,'
+      'GODREJCP,CGCL,IRCTC,JUBLFOOD,OLECTRA,INOXWIND,BALKRISIND,VOLTAS,'
+      'FLUOROCHEM,STARHEALTH,JYOTICNC,KIMS,GMDCLTD,CYIENT,GRANULES,IPCALAB,'
+      'AETHER,JPPOWER,PIRAMALFIN,VEDPOWER,ANANDRATHI,RKFORGE,BBOX,NATCOPHARM,'
+      'IREDA,JINDALSAW,URBANCO,ACE,CLEANMAX,SUPREMEIND,JSL,CASTROLIND,RPOWER,'
+      'J&KBANK,BANKINDIA,DELHIVERY,ANTHEM,SBICARD,CMPDI,BALRAMCHIN,MSUMI,'
+      'INDIANB,TBOTEK,AEGISVOPAK,HUDCO,JWL,SHYAMMETL,SAGILITY,OBEROIRLTY,'
+      'MEDANTA,PGEL,GODFRYPHLP,PRIVISCL,GABRIEL,PETRONET,NBCC,ABREL,'
+      'CARBORUNIV,ACMESOLAR,ATGL,BAJAJHFL,TATATECH,CPPLUS,NH,ELECON,GPIL,MRF,'
+      'EMMVEE,CREDITACC,BAJAJHLDNG,BSOFT,CCL,COROMANDEL,GRAVITA,NLCINDIA,'
+      'CAPLIPOINT,ASTRAL,ZENTEC,SCI,BEML,CONCOR,PVRINOX,ARE&M,FIRSTCRY,ITCHOTELS,'
+      'SUMICHEM,NUVOCO,THANGAMAYL,CRAFTSMAN,APTUS,AWL,ZFCVINDIA,TENNIND,IEX,'
+      'POONAWALLA,IGL,MINDACORP,KSB,AAVAS,LTFOODS,ENDURANCE,CHOLAHLDNG,PTCIL,'
+      'CHOICEIN,COHANCE,TITAGARH,TTML,CANFINHOME,DEEPAKFERT,NIACL,NSLNISP,PCBL,'
+      'APOLLOTYRE,PIIND,RAINBOW,HONAUT,FIVESTAR,AADHARHFC,ABSLAMC,HDBFS,'
+      'LINDEINDIA,AJANTPHARM,VIJAYA,PARADEEP,IKS,ANURAS,AFFLE,CEMPRO,LTTS,'
+      'ELGIEQUIP,SJVN,RUBICON,TRITURBINE,CLEAN,JMFINANCIL,CESC,DEEPAKNTR,MGL,KEC,'
+      'TATACOMM,GICRE,AVANTIFEED,EIDPARRY,KIRLOSBROS,AARTIIND,JAINREC,RAILTEL,'
+      'JBMA,JSWCEMENT,USHAMART,HOMEFIRST,GLAXO,FRACTAL,SWANCORP,CONCORDBIO,'
+      'ECLERX,TORNTPOWER,NTPCGREEN,SYNGENE,NAVA,ABBOTINDIA,IRB,HEGAM,'
+      'CHAMBLFERT,BRIGADE,BERGEPAINT,ACC,TATAINVEST,BLS,SUNDARMFIN,UBL,'
+      'SCHAEFFLER,JKTYRE,SIGNATURE,INTELLECT,FSL,RHIM,BHARTIHEXA,CEATLTD,'
+      'TECHNOE,BHARATCOAL,KPIL,JUBLINGREA,GILLETTE,POLYMED,CRISIL,CENTRALBK,'
+      'ASAHIINDIA,TIMKEN,VTL,EMCURE,ATUL,DEVYANI,DALBHARAT,HEXT,AIIL,AIAENG,'
+      'KPRMILL,GODREJIND,SOBHA,AFCONS,SARDAEN,INDIAMART,CIEINDIA,UCOBANK,IOB,'
+      'BATAINDIA,IGIL,ZYDUSWELL,FACT,INDIACEM,RAMCOCEM,CANHLIFE,TRIDENT,UTIAMC,'
+      'MMTC,EIHOTEL,DOMS,ITI,GALLANTT'
+  )
+  user_input = st.text_area('Watchlist Tickers', full_list, height=120)
+  SYMBOLS = [s.strip().upper() for s in user_input.split(',') if s.strip()]
+
+  if st.button('🗑️ Reset All Trades'):
+    st.session_state.dual_trades = {'regular': {}, 'reversed': {}}
+    if os.path.exists(TRADES_FILE):
+      os.remove(TRADES_FILE)
+    st.rerun()
+
+# --- HEADER (INDICES) ---
+ist_now = get_ist()
+open_status, status_text = is_market_open()
+
+try:
+  indices = yf.download(
+      ['^NSEI', '^BSESN'], period='2d', interval='5m', progress=False
+  )
+  if not indices.empty and 'Close' in indices.columns:
+    n_series = indices['Close']['^NSEI'].dropna()
+    s_series = indices['Close']['^BSESN'].dropna()
+
+    n_curr, n_prev = n_series.iloc[-1], n_series.iloc[0]
+    s_curr, s_prev = s_series.iloc[-1], s_series.iloc[0]
+
+    n_chg = ((n_curr - n_prev) / n_prev) * 100
+    s_chg = ((s_curr - s_prev) / s_prev) * 100
+    st.markdown(
+        f"### NIFTY 50: **{n_curr:,.2f}** ({':green' if n_chg>=0 else ':red'}[{n_chg:+.2f}%]) | SENSEX: **{s_curr:,.2f}** ({':green' if s_chg>=0 else ':red'}[{s_chg:+.2f}%])"
+    )
+  else:
+    st.markdown('### Indices: `Data Temporarily Unavailable`')
+except Exception:
+  st.markdown('### Indices: `Connecting...`')
+
+st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
+
+
+# --- CALCULATION LOGIC CORE WITH TRADE REFINEMENT RULE SET ---
+def process_strategy_refined(
+    data_daily, data_intraday, is_reversed=False
+):
+  if data_intraday.empty or not isinstance(
+      data_intraday.columns, pd.MultiIndex
+  ):
+    return pd.DataFrame()
+  results = []
+  strategy_key = 'reversed' if is_reversed else 'regular'
+
+  actual_present_tickers = set([col[0] for col in data_intraday.columns])
+
+  for symbol in SYMBOLS:
+    t_str = f'{symbol}.NS'
+    if t_str not in actual_present_tickers:
+      continue
+
+    try:
+      df_i = data_intraday[t_str].dropna(
+          subset=['Close', 'Open', 'High', 'Low', 'Volume']
+      )
+      if len(df_i) < 30:
+        continue
+
+      cmp = float(df_i['Close'].iloc[-1])
+
+      # --- 1. PRICE FILTER ---
+      if cmp < filter_min_price or cmp > filter_max_price:
+        continue
+
+      # --- 2. HTF FILTER (Daily) ---
+      htf_passed = True
+      if use_htf_ema and symbol in data_daily.columns.levels[0]:
+        df_d = data_daily[symbol].dropna(subset=['Close'])
+        if len(df_d) >= 200:
+          d_close = df_d['Close']
+          ema_50 = d_close.ewm(span=50, adjust=False).mean().iloc[-1]
+          ema_200 = d_close.ewm(span=200, adjust=False).mean().iloc[-1]
+          if not (d_close.iloc[-1] > ema_50 and d_close.iloc[-1] > ema_200):
+            htf_passed = False
+
+      # --- 3. VOLATILITY FILTER (ATR 14 vs 30-day Avg) ---
+      vol_passed = True
+      if use_atr_volatility and symbol in data_daily.columns.levels[0]:
+        df_d = data_daily[symbol].dropna(subset=['High', 'Low', 'Close'])
+        if len(df_d) >= 45:
+          h, l, c = df_d['High'], df_d['Low'], df_d['Close']
+          tr_d = np.maximum(
+              h - l, np.maximum(abs(h - c.shift(1)), abs(l - c.shift(1)))
+          )
+          atr_14 = tr_d.rolling(14).mean()
+          avg_atr_30 = atr_14.rolling(30).mean()
+          if atr_14.iloc[-1] <= avg_atr_30.iloc[-1]:
+            vol_passed = False
+
+      # --- 4. MOMENTUM (ROC 10-period) ---
+      closes = df_i['Close']
+      p10 = closes.iloc[-11] if len(closes) >= 11 else closes.iloc[0]
+      roc_val = ((cmp - p10) / p10) * 100
+
+      if roc_val >= 0:
+        if not (filter_pos_roc_min <= roc_val <= filter_pos_roc_max):
+          continue
+      else:
+        if not (filter_neg_roc_min <= roc_val <= filter_neg_roc_max):
+          continue
+
+      # --- 5. DEMAND ZONE & ATR STOP LOSS REFINEMENT ---
+      highs, lows, volumes = df_i['High'], df_i['Low'], df_i['Volume']
+      zone_low = lows.tail(20).min()
+
+      # Intraday 15m ATR for buffer
+      tr_i = np.maximum(
+          highs - lows,
+          np.maximum(
+              abs(highs - closes.shift(1)), abs(lows - closes.shift(1))
+          ),
+      )
+      atr_15m = pd.Series(tr_i, index=df_i.index).rolling(14).mean().iloc[-1]
+      trigger_high = highs.iloc[-2]
+
+      # Entry & Invalidation Rules
+      entry_price = trigger_high + (0.0005 * cmp)  # 0.05% CMP offset
+      stop_loss = zone_low - (0.5 * atr_15m)  # Volatility buffer
+
+      risk_per_share = entry_price - stop_loss
+      if risk_per_share <= 0:
+        risk_per_share = cmp * 0.005  # fallback safeguard
+
+      target_1 = entry_price + (2.0 * risk_per_share)
+      target_2 = entry_price + (3.5 * risk_per_share)
+
+      # Prob Score & Signals
+      prob_score = 3 if (htf_passed and vol_passed) else 1
+      p_text = 'HIGH' if prob_score >= 3 else 'MED'
+      flag = '🟢 ' if 1.0 <= abs(roc_val) <= 5.0 else '🔴 '
+
+      # Trade conditions
+      if not is_reversed:
+        trade_cond = (
+            'S.Buy'
+            if (roc_val > 0 and htf_passed)
+            else ('S.Sell' if (roc_val < 0 and not htf_passed) else '-')
+        )
+      else:
+        trade_cond = (
+            'S.Buy'
+            if (roc_val < 0 and not htf_passed)
+            else ('S.Sell' if (roc_val > 0 and htf_passed) else '-')
+        )
+
+      trade = st.session_state.dual_trades[strategy_key].get(symbol)
+      status = 'WAITING'
+      e_time = ist_now.strftime('%H:%M')
+      t_type = trade.get('type') if trade else ('BUY' if roc_val > 0 else 'SELL')
+
+      if trade:
+        status = 'IN TRADE'
+        e_time = trade.get('time', e_time)
+        if t_type == 'BUY':
+          if cmp >= trade['target']:
+            status = '🎯 TARGET HIT'
+          elif cmp <= trade['sl']:
+            status = '🛑 SL HIT'
+        else:
+          if cmp <= trade['target']:
+            status = '🎯 TARGET HIT'
+          elif cmp >= trade['sl']:
+            status = '🛑 SL HIT'
+      else:
+        # Register new trade setup
+        st.session_state.dual_trades[strategy_key][symbol] = {
+            'entry': round(entry_price, 2),
+            'target': round(target_1, 2),
+            'sl': round(stop_loss, 2),
+            'type': t_type,
+            'time': e_time,
+            'prob_text': p_text,
+        }
+        save_persistent_trades(st.session_state.dual_trades)
+        trade = st.session_state.dual_trades[strategy_key][symbol]
+
+      # Filters check
+      if (
+          filter_trade_type == 'S.Buy Only'
+          and trade_cond != 'S.Buy'
+          and trade_cond != '-'
+      ):
+        continue
+      if (
+          filter_trade_type == 'S.Sell Only'
+          and trade_cond != 'S.Sell'
+          and trade_cond != '-'
+      ):
+        continue
+
+      results.append({
+          'Stock': flag + symbol,
+          'Trade': '🟢 ' + trade_cond,
+          'Qty': f"🟢 {int(capital // cmp)}",
+          'CMP': cmp,
+          'Entry': trade['entry'],
+          'SL': trade['sl'],
+          'Target': trade['target'],
+          'A/D Trend': (
+              '🚨 Bullish Shift' if roc_val > 0 else '🚨 Bearish Shift'
+          ),
+          'Signal': f'ROC:{roc_val:+.2f}% | ATR:{atr_15m:.2f}',
+          'Status': status,
+          'Prob': p_text,
+          'Time': e_time,
+          'InTrade': 1 if trade else 0,
+          'ROC_Val': abs(roc_val),
+          'TradeType': t_type,
+      })
+    except Exception:
+      continue
+
+  if not results:
+    return pd.DataFrame()
+  df_out = (
+      pd.DataFrame(results)
+      .sort_values(by=['InTrade', 'ROC_Val'], ascending=False)
+      .drop(columns=['InTrade', 'ROC_Val'])
+  )
+  return df_out[[
+      'Stock',
+      'Trade',
+      'Qty',
+      'CMP',
+      'Entry',
+      'SL',
+      'Target',
+      'A/D Trend',
+      'Signal',
+      'Status',
+      'Prob',
+      'Time',
+      'TradeType',
+  ]]
+
+
+# --- EXECUTE FETCH ---
+tickers = [f'{s}.NS' for s in SYMBOLS]
+try:
+  raw_intraday = yf.download(
+      tickers,
+      period='2d',
+      interval='5m',
+      group_by='ticker',
+      auto_adjust=True,
+      progress=False,
+  )
+  raw_daily = yf.download(
+      tickers,
+      period='1y',
+      interval='1d',
+      group_by='ticker',
+      auto_adjust=True,
+      progress=False,
+  )
+except Exception:
+  raw_intraday, raw_daily = pd.DataFrame(), pd.DataFrame()
+
+
+# --- STYLING ---
+def apply_dynamic_styles(df):
+  styles = pd.DataFrame('', index=df.index, columns=df.columns)
+  for i, row in df.iterrows():
+    if 'IN TRADE' in str(row['Status']) or 'HIT' in str(row['Status']):
+      row_bg = '#c6f6d5' if row['TradeType'] == 'BUY' else '#fed7d7'
+      styles.loc[i, :] = (
+          f'background-color: {row_bg}; color: black; font-weight: 500'
+      )
+      is_buy = row['TradeType'] == 'BUY'
+      cmp_bg = (
+          '#1a8a44'
+          if (is_buy and row['CMP'] >= row['Entry'])
+          or (not is_buy and row['CMP'] <= row['Entry'])
+          else '#c53030'
+      )
+      styles.loc[i, 'CMP'] = (
+          f'background-color: {cmp_bg}; color: white; font-weight: bold'
+      )
+  return styles
+
+
+columns_to_show = [
+    'Stock',
+    'Trade',
+    'Qty',
+    'CMP',
+    'Signal',
+    'Entry',
+    'SL',
+    'Target',
+    'A/D Trend',
+    'Status',
+    'Prob',
+    'Time',
+]
+
+df_reg = (
+    process_strategy_refined(raw_daily, raw_intraday, is_reversed=False)
+    if not raw_intraday.empty
+    else pd.DataFrame()
+)
+df_rev = (
+    process_strategy_refined(raw_daily, raw_intraday, is_reversed=True)
+    if not raw_intraday.empty
+    else pd.DataFrame()
 )
 
-# --- SIDEBAR CONFIGURATION ---
-st.sidebar.header("⚙️ Parameters & Controls")
+# --- 🪟 TRADE WINDOW ---
+st.markdown('---')
+st.header('🪟 1) REFINED TRADE WINDOW')
 
-ticker = st.sidebar.textbox("Ticker Symbol", value="NSE:RELIANCE")
-capital = st.sidebar.number_input(
-    "Total Capital (₹)", value=500000, step=25000
+active_reg = (
+    df_reg[df_reg['Status'].str.contains('IN TRADE|HIT', regex=True, na=False)]
+    if not df_reg.empty
+    else pd.DataFrame()
 )
-risk_pct = st.sidebar.slider(
-    "Max Risk Per Trade (%)", min_value=0.5, max_value=3.0, value=1.0, step=0.1
-)
-roc_threshold = st.sidebar.slider(
-    "Daily ROC Threshold (%)",
-    min_value=0.5,
-    max_value=3.0,
-    value=1.36,
-    step=0.05,
-)
-lookback_bars = st.sidebar.slider(
-    "Intraday Zone Lookback Bars", min_value=10, max_value=50, value=20
+active_rev = (
+    df_rev[df_rev['Status'].str.contains('IN TRADE|HIT', regex=True, na=False)]
+    if not df_rev.empty
+    else pd.DataFrame()
 )
 
-# Load Data & Process Engine
-df_daily, df_intraday = generate_market_data()
-engine = TradeRefinementEngine(
-    df_daily, df_intraday, roc_threshold=roc_threshold
-)
-htf_status = engine.compute_htf_filters()
-params = engine.identify_demand_zone_and_setup(lookback_bars=lookback_bars)
+if not active_reg.empty or not active_rev.empty:
+  combined_trades = pd.concat([active_reg, active_rev], ignore_index=True)
+  combined_trades = combined_trades.drop_duplicates(
+      subset=['Stock'], keep='first'
+  )
 
-# --- ALERT / SYSTEM STATUS BANNER ---
-st.subheader("1. Trade Signal Status")
-
-if htf_status["htf_bias_approved"]:
-  st.success(
-      f"🟢 **TRADE APPROVED FOR {ticker}**: All Higher Timeframe (HTF)"
-      " filters validated. Entry parameters unlocked."
+  view_trade_window = combined_trades.style.apply(
+      apply_dynamic_styles, axis=None
+  ).format({'CMP': '{:.2f}', 'Entry': '{:.2f}', 'Target': '{:.2f}', 'SL': '{:.2f}'})
+  st.dataframe(
+      view_trade_window,
+      use_container_width=True,
+      hide_index=True,
+      column_order=columns_to_show,
   )
 else:
-  reasons = []
-  if not htf_status["trend_valid"]:
-    reasons.append("Price below 50/200 EMA")
-  if not htf_status["volatility_expanded"]:
-    reasons.append("ATR(14) < 30-Day Avg ATR")
-  if not htf_status["momentum_valid"]:
-    reasons.append(f"ROC(10) <= {roc_threshold}%")
+  st.info('No active open positions match refined conditions.')
 
-  st.error(
-      f"🔴 **TRADE REJECTED FOR {ticker}**: Failed HTF Criteria ->"
-      f" {', '.join(reasons)}"
-  )
+# --- RENDER MONITORS ---
+st.markdown('---')
+col_reg, col_rev = st.columns(2)
 
-# --- HTF FILTER CHECKPOINTS ---
-col_f1, col_f2, col_f3 = st.columns(3)
-with col_f1:
-  status_icon = "✅ PASS" if htf_status["trend_valid"] else "❌ FAIL"
-  st.metric(
-      label="Trend Alignment (50/200 EMA)",
-      value=f"{params['cmp']:.2f} CMP",
-      delta=status_icon,
-  )
+with col_reg:
+  st.subheader('📊 2) REGULAR REFINED MONITOR')
+  if not df_reg.empty:
+    view_reg = df_reg.style.apply(apply_dynamic_styles, axis=None).format({
+        'CMP': '{:.2f}',
+        'Entry': lambda x: f'{x:.2f}' if x > 0 else '-',
+        'Target': lambda x: f'{x:.2f}' if x > 0 else '-',
+        'SL': lambda x: f'{x:.2f}' if x > 0 else '-',
+    })
+    st.dataframe(
+        view_reg,
+        use_container_width=True,
+        hide_index=True,
+        column_order=columns_to_show,
+    )
+  else:
+    st.caption('No tickers match refined standard filters.')
 
-with col_f2:
-  status_icon = "✅ PASS" if htf_status["volatility_expanded"] else "❌ FAIL"
-  st.metric(
-      label="Volatility Expansion (ATR 14 vs 30d)",
-      value=f"{htf_status['current_atr']:.2f}",
-      delta=status_icon,
-  )
+with col_rev:
+  st.subheader('🔄 3) REVERSED REFINED MONITOR')
+  if not df_rev.empty:
+    view_rev = df_rev.style.apply(apply_dynamic_styles, axis=None).format({
+        'CMP': '{:.2f}',
+        'Entry': lambda x: f'{x:.2f}' if x > 0 else '-',
+        'Target': lambda x: f'{x:.2f}' if x > 0 else '-',
+        'SL': lambda x: f'{x:.2f}' if x > 0 else '-',
+    })
+    st.dataframe(
+        view_rev,
+        use_container_width=True,
+        hide_index=True,
+        column_order=columns_to_show,
+    )
+  else:
+    st.caption('No tickers match reversal refined filters.')
 
-with col_f3:
-  status_icon = "✅ PASS" if htf_status["momentum_valid"] else "❌ FAIL"
-  st.metric(
-      label="Momentum Filter (ROC 10)",
-      value=f"{htf_status['current_roc']:.2f}%",
-      delta=f"Target > {roc_threshold}%",
-  )
-
-st.markdown("---")
-
-# --- EXECUTION PARAMETERS & POSITION SIZING ---
-st.subheader("2. Precise Execution Levels & Sizing")
-
-# Calculation of Position Sizing based on Capital & Risk
-max_loss_amount = capital * (risk_pct / 100.0)
-position_size = int(max_loss_amount / params["risk_per_share"])
-total_position_value = position_size * params["entry_price"]
-
-col_e1, col_e2, col_e3, col_e4, col_e5 = st.columns(5)
-col_e1.metric(
-    label="Limit Entry Price",
-    value=f"₹{params['entry_price']}",
-    delta="+0.05% CMP Offset",
-)
-col_e2.metric(
-    label="Stop Loss (Invalidation)",
-    value=f"₹{params['stop_loss']}",
-    delta=f"-0.5*ATR ({params['risk_per_share']}/sh)",
-    delta_color="inverse",
-)
-col_e3.metric(
-    label="Target 1 (50% Qty - 1:2 R:R)",
-    value=f"₹{params['target_1_50_pct']}",
-    delta="Move SL to BE",
-)
-col_e4.metric(
-    label="Target 2 (50% Qty - 1:3.5 R:R)",
-    value=f"₹{params['target_2_remaining']}",
-    delta="Runner Target",
-)
-col_e5.metric(
-    label="Max Position Qty",
-    value=f"{position_size} Shares",
-    delta=f"₹{total_position_value:,.0f} Total Val",
-)
-
-st.markdown("---")
-
-# --- INTERACTIVE CHARTS ---
-st.subheader("3. Technical Visualization")
-
-tab1, tab2 = st.tabs(
-    ["Intraday Setup & Order Levels (15m)", "Daily HTF Structure & Moving Averages"]
-)
-
-with tab1:
-  fig_i = make_subplots(
-      rows=2,
-      cols=1,
-      shared_xaxes=True,
-      vertical_spacing=0.05,
-      row_heights=[0.7, 0.3],
-  )
-
-  # Intraday Candlestick Chart
-  fig_i.add_trace(
-      go.Candlestick(
-          x=df_intraday.index,
-          open=df_intraday["Open"],
-          high=df_intraday["High"],
-          low=df_intraday["Low"],
-          close=df_intraday["Close"],
-          name="15m OHLC",
-      ),
-      row=1,
-      col=1,
-  )
-
-  # Execution Lines
-  fig_i.add_hline(
-      y=params["entry_price"],
-      line_dash="dash",
-      line_color="blue",
-      annotation_text="ENTRY LIMIT",
-      row=1,
-      col=1,
-  )
-  fig_i.add_hline(
-      y=params["stop_loss"],
-      line_dash="dash",
-      line_color="red",
-      annotation_text="STOP LOSS",
-      row=1,
-      col=1,
-  )
-  fig_i.add_hline(
-      y=params["target_1_50_pct"],
-      line_dash="dash",
-      line_color="green",
-      annotation_text="T1 (1:2 R:R)",
-      row=1,
-      col=1,
-  )
-  fig_i.add_hline(
-      y=params["target_2_remaining"],
-      line_dash="dash",
-      line_color="darkgreen",
-      annotation_text="T2 (1:3.5 R:R)",
-      row=1,
-      col=1,
-  )
-
-  # Intraday Volume
-  fig_i.add_trace(
-      go.Bar(
-          x=df_intraday.index,
-          y=df_intraday["Volume"],
-          name="Volume",
-          marker_color="lightblue",
-      ),
-      row=2,
-      col=1,
-  )
-
-  fig_i.update_layout(
-      height=500, xaxis_rangeslider_visible=False, template="plotly_white"
-  )
-  st.plotly_chart(fig_i, use_container_width=True)
-
-with tab2:
-  fig_d = make_subplots(
-      rows=2,
-      cols=1,
-      shared_xaxes=True,
-      vertical_spacing=0.05,
-      row_heights=[0.7, 0.3],
-  )
-
-  # Daily Candlestick Chart
-  fig_d.add_trace(
-      go.Candlestick(
-          x=df_daily.index,
-          open=df_daily["Open"],
-          high=df_daily["High"],
-          low=df_daily["Low"],
-          close=df_daily["Close"],
-          name="Daily OHLC",
-      ),
-      row=1,
-      col=1,
-  )
-
-  # EMAs
-  fig_d.add_trace(
-      go.Scatter(
-          x=df_daily.index,
-          y=engine.df_d["EMA_50"],
-          line=dict(color="orange", width=1.5),
-          name="50 EMA",
-      ),
-      row=1,
-      col=1,
-  )
-  fig_d.add_trace(
-      go.Scatter(
-          x=df_daily.index,
-          y=engine.df_d["EMA_200"],
-          line=dict(color="purple", width=1.5),
-          name="200 EMA",
-      ),
-      row=1,
-      col=1,
-  )
-
-  # ROC Subplot
-  fig_d.add_trace(
-      go.Scatter(
-          x=df_daily.index,
-          y=engine.df_d["ROC_10"],
-          line=dict(color="blue", width=1.5),
-          name="ROC (10)",
-      ),
-      row=2,
-      col=1,
-  )
-  fig_d.add_hline(
-      y=roc_threshold,
-      line_dash="dot",
-      line_color="red",
-      annotation_text=f"Threshold ({roc_threshold}%)",
-      row=2,
-      col=1,
-  )
-
-  fig_d.update_layout(
-      height=500, xaxis_rangeslider_visible=False, template="plotly_white"
-  )
-  st.plotly_chart(fig_d, use_container_width=True)
+# --- REFRESH CONTROL ---
+time.sleep(60 if open_status else 300)
+st.rerun()
