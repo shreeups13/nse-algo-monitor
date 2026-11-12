@@ -235,7 +235,7 @@ def apply_dynamic_styles(df):
             styles.loc[i, 'CMP'] = f'background-color: {cmp_bg}; color: white; font-weight: bold'
     return styles
 
-columns_show = ["Stock", "Trade", "Qty", "Entry",CMP", "Confidence", "Signal Details", "SL", "Target", "Status", "Time"]
+columns_show = ["Stock", "Trade", "Qty", "Entry","CMP", "Confidence", "Signal Details", "SL", "Target", "Status", "Time"]
 
 df_reg = process_core_flex_strategy(raw_market_data, is_reversed=False) if not raw_market_data.empty else pd.DataFrame()
 df_rev = process_core_flex_strategy(raw_market_data, is_reversed=True) if not raw_market_data.empty else pd.DataFrame()
