@@ -430,7 +430,7 @@ def render_live_dashboard():
                     styles.loc[i, 'Pos #'] = 'background-color: #dbeafe; color: #1e40af; font-weight: bold'
         return styles
 
-    columns_show = ["Stock", "Pos #", "T/S", "Trade", "Entry", "CMP", "SL", "Target", "Status", "Confidence", "Signal Details", "Time", "Qty"]
+    columns_show = ["Stock","Trade", "Entry", "CMP", "SL", "Target", "Status", "Confidence", "Signal Details","Pos #","Time", "Qty", "T/S"]
 
     st.subheader("🪟 Active & Multi-Cycle Trade Window")
 
