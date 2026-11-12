@@ -1,4 +1,4 @@
-# NSE Pro Monitor v5.3 - Seamless Auto-Refresh & Mobile-Optimized Engine
+# NSE Pro Monitor v5.4 - Mobile-Perfected Responsive Engine
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -8,49 +8,48 @@ import json
 import os
 
 # --- PAGE CONFIG & RESPONSIVE CSS ---
-st.set_page_config(page_title="NSE Pro Monitor v5.3", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="NSE Pro Monitor v5.4", layout="wide", page_icon="⚡")
 
 st.markdown("""
     <style>
         .block-container {
-            padding-top: 0.8rem !important;
+            padding-top: 0.5rem !important;
             padding-bottom: 1rem !important;
-            padding-left: 1rem !important;
-            padding-right: 1rem !important;
+            padding-left: 0.8rem !important;
+            padding-right: 0.8rem !important;
         }
         header[data-testid="stHeader"] {
-            height: 2rem !important;
+            height: 1.8rem !important;
             background: transparent !important;
         }
-        /* Mobile-optimized compact status bar */
+        /* Fully responsive compact status bar for mobile */
         .compact-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
             background-color: #1e222a;
             color: #f8fafc;
-            padding: 8px 12px;
+            padding: 10px 12px;
             border-radius: 8px;
             border: 1px solid #2e3440;
             font-size: 0.82rem;
             margin-bottom: 8px;
-            overflow-x: auto;
-            white-space: nowrap;
-        }
-        .compact-bar div {
             display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .compact-row {
+            display: flex;
+            justify-content: space-between;
             align-items: center;
-            gap: 10px;
+            width: 100%;
         }
         h2, h3 {
             margin-top: 0.2rem !important;
             margin-bottom: 0.3rem !important;
-            font-size: 1.1rem !important;
+            font-size: 1.05rem !important;
         }
     </style>
 """, unsafe_allow_html=True)
 
-TRADES_FILE = "trade_history_dual_v53.json"
+TRADES_FILE = "trade_history_dual_v54.json"
 
 def load_persistent_trades():
     if os.path.exists(TRADES_FILE):
@@ -79,7 +78,9 @@ NSE_HOLIDAYS = {
 }
 
 def get_ist():
-    return datetime.utcnow() + timedelta(hours=5, minutes=30)
+    # Correct IST offset calculation independent of server timezone
+    utc_now = datetime.utcnow()
+    return utc_now + timedelta(hours=5, minutes=30)
 
 def is_market_open():
     now = get_ist()
@@ -165,7 +166,7 @@ def fetch_market_batch(ticker_tuple):
     except Exception:
         return pd.DataFrame()
 
-# --- TOP COMPACT STATUS BAR ---
+# --- TOP RESPONSIVE STATUS BAR ---
 ist_now = get_ist()
 open_status, status_text = is_market_open()
 idx_data = fetch_indices()
@@ -184,9 +185,9 @@ else:
 st.markdown(
     f"""
     <div class="compact-bar">
-        <div>{idx_html}</div>
-        <div>
-            <span>🕰️ <b>{ist_now.strftime('%H:%M:%S')}</b></span>
+        <div class="compact-row">{idx_html}</div>
+        <div class="compact-row">
+            <span>🕰️ <b>{ist_now.strftime('%H:%M:%S')} IST</b></span>
             <span><b>{status_text}</b></span>
         </div>
     </div>
@@ -194,10 +195,9 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# --- STRATEGY & RENDER ENGINE WRAPPED IN AUTO-REFRESH FRAGMENT ---
+# --- LIVE AUTO-REFRESH FRAGMENT ENGINE ---
 @st.fragment(run_every=refresh_sec)
 def render_live_dashboard():
-    # Fetch batch market data inside fragment for background auto-refresh
     tickers_tuple = tuple(f"{s}.NS" for s in SYMBOLS)
     raw_market_data = fetch_market_batch(tickers_tuple)
 
@@ -238,7 +238,6 @@ def render_live_dashboard():
                 if not trade and not (filter_roc_min <= abs(roc_val) <= filter_roc_max):
                     continue
 
-                # Flex nodes
                 flex_score = 0
                 sigs = []
                 ema9 = float(df['Close'].ewm(span=9).mean().iloc[-1])
@@ -275,7 +274,6 @@ def render_live_dashboard():
 
                 confidence_label = "⭐" * flex_score if flex_score > 0 else "⚪ Low"
 
-                # State machine
                 now_time = get_ist().strftime("%H:%M")
                 status = "WAITING"
                 t_type = None
@@ -453,7 +451,7 @@ def render_live_dashboard():
             use_container_width=True,
             hide_index=True,
             column_order=columns_show,
-            height=230
+            height=220
         )
     else:
         st.info("No active open positions or hit cycles currently.")
@@ -473,7 +471,7 @@ def render_live_dashboard():
                 use_container_width=True,
                 hide_index=True,
                 column_order=columns_show,
-                height=440
+                height=420
             )
         else:
             st.caption("No tickers match standard filters right now.")
@@ -491,10 +489,9 @@ def render_live_dashboard():
                 use_container_width=True,
                 hide_index=True,
                 column_order=columns_show,
-                height=440
+                height=420
             )
         else:
             st.caption("No tickers match reversal filters right now.")
 
-# Run the live dashboard fragment
 render_live_dashboard()
