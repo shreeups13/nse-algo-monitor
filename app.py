@@ -1,4 +1,4 @@
-# #NSE Pro Monitor v5.1 - Core + Flex Momentum Engine
+# #NSE Pro Monitor v5.2 - Refined Core + Flex Momentum Engine
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -9,9 +9,9 @@ import json
 import os
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="NSE Pro Monitor v5.1 (Core+Flex)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="NSE Pro Monitor v5.2 (Refined Core+Flex)", layout="wide", page_icon="⚡")
 
-TRADES_FILE = "trade_history_dual_v51.json"
+TRADES_FILE = "trade_history_dual_v52.json"
 
 def load_persistent_trades():
     if os.path.exists(TRADES_FILE):
@@ -49,18 +49,18 @@ if 'dual_trades' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Execution Settings")
     capital = st.number_input("Capital (₹)", min_value=1000, value=5000, step=1000)
-    target_pct = st.slider("Target (%)", 0.5, 5.0, 1.0) / 100
-    sl_pct = st.slider("Stop Loss (%)", 0.2, 2.0, 0.5) / 100
+    target_pct = st.slider("Target (%)", 0.5, 5.0, 1.2) / 100
+    sl_atr_mult = st.slider("Stop Loss ATR Multiplier", 0.5, 3.0, 1.5, step=0.1)
     
     st.markdown("---")
     st.subheader("⚡ Core Entry Controls")
-    vol_multiplier = st.slider("Min Volume Surge vs MA(10)", 1.0, 2.5, 1.15, step=0.05)
+    vol_multiplier = st.slider("Min Volume Surge vs MA(20)", 1.0, 3.0, 1.5, step=0.05)
     filter_min_price = st.number_input("Min Stock Price (₹)", min_value=0.0, value=30.0, step=10.0)
-    filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=1000.0, step=100.0)
+    filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=2000.0, step=100.0)
     
     st.markdown("**📈 ROC Velocity Filter (%)**")
-    filter_roc_min = st.number_input("ROC Min", value=0.50, step=0.01)
-    filter_roc_max = st.number_input("ROC Max", value=5.00, step=0.01)
+    filter_roc_min = st.number_input("ROC Min", value=0.80, step=0.05)
+    filter_roc_max = st.number_input("ROC Max", value=6.00, step=0.05)
     
     filter_status = st.selectbox("Status Filter", ["All", "In Trade", "Target Hit", "SL Hit", "Waiting"])
     
@@ -95,7 +95,7 @@ except Exception:
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 
-# --- CORE STRATEGY CALCULATIONS ---
+# --- REFINED STRATEGY ENGINE WITH ATR & EMA FILTER ---
 def process_core_flex_strategy(data, is_reversed=False):
     if data.empty or not isinstance(data.columns, pd.MultiIndex): return pd.DataFrame()
     results = []
@@ -108,62 +108,54 @@ def process_core_flex_strategy(data, is_reversed=False):
         
         try:
             df = data[t_str].dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
-            if len(df) < 25: continue
+            if len(df) < 30: continue
 
             cmp = float(df['Close'].iloc[-1])
             c_open = float(df['Open'].iloc[-1])
             
             if cmp < filter_min_price or cmp > filter_max_price: continue
 
-            # --- CORE TRIGGER (PRICE ACTION + VOLUME EXPANSION) ---
-            vol_avg = df['Volume'].rolling(10).mean().iloc[-1]
+            # --- FILTER 1: ATR Calculation (Volatility Buffer) ---
+            high, low, close = df['High'], df['Low'], df['Close']
+            prev_close = close.shift(1)
+            tr = np.maximum((high - low), np.maximum(np.abs(high - prev_close), np.abs(low - prev_close)))
+            atr = float(tr.rolling(14).mean().iloc[-1])
+
+            # --- FILTER 2: Robust Volume Surge vs MA(20) ---
+            vol_avg = df['Volume'].rolling(20).mean().iloc[-1]
             vol_surge = df['Volume'].iloc[-1] >= (vol_avg * vol_multiplier)
             
-            p5 = df['Close'].iloc[-6] if len(df) >= 6 else df['Close'].iloc[0]
-            roc_val = ((cmp - p5) / p5) * 100
+            # --- FILTER 3: ROC Velocity (10-bar window for smoother momentum) ---
+            p10 = df['Close'].iloc[-11] if len(df) >= 11 else df['Close'].iloc[0]
+            roc_val = ((cmp - p10) / p10) * 100
             
             if not (filter_roc_min <= abs(roc_val) <= filter_roc_max): continue
 
-            # --- FLEX CONFIRMATION NODES (CALCULATE WEIGHTED SCORE) ---
+            # --- FLEX CONFIRMATION NODES ---
             flex_score = 0
             sigs = []
 
-            # Flex Node 1: Moving Average Trend Alignment
+            # Node 1: EMA Trend Alignment (9 vs 21 vs 50)
             ema9 = df['Close'].ewm(span=9).mean().iloc[-1]
             ema21 = df['Close'].ewm(span=21).mean().iloc[-1]
-            if (not is_reversed and cmp > ema9 > ema21) or (is_reversed and cmp < ema9 < ema21):
-                flex_score += 1
-                sigs.append("✓EMA Alignment")
-
-            # Flex Node 2: Trend Strength (ADX)
-            high, low, close = df['High'], df['Low'], df['Close']
-            prev_close = close.shift(1)
-            tr = np.nanmax(np.column_stack([(high - low), np.abs(high - prev_close), np.abs(low - prev_close)]), axis=1)
-            up_move = high - high.shift(1)
-            down_move = low.shift(1) - low
-            plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-            minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-            tr_s = pd.Series(tr).rolling(14).sum()
-            p_di = 100 * (pd.Series(plus_dm).rolling(14).sum() / np.where(tr_s == 0, 1e-9, tr_s))
-            m_di = 100 * (pd.Series(minus_dm).rolling(14).sum() / np.where(tr_s == 0, 1e-9, tr_s))
-            adx = float(100 * (np.abs(p_di - m_di) / np.where((p_di + m_di) == 0, 1e-9, (p_di + m_di))).rolling(14).mean().iloc[-1])
+            ema50 = df['Close'].ewm(span=50).mean().iloc[-1] if len(df) >= 50 else ema21
             
-            if adx > 20.0:
-                flex_score += 1
-                sigs.append(f"ADX:{adx:.1f}")
+            trend_aligned = (not is_reversed and cmp > ema9 > ema21 > ema50) or (is_reversed and cmp < ema9 < ema21 < ema50)
+            if trend_aligned:
+                flex_score += 2
+                sigs.append("✓EMA Trend Stack")
 
-            # Flex Node 3: Volume Surge Magnitude
+            # Node 2: Volume Magnitude
             if vol_surge:
                 flex_score += 1
                 sigs.append(f"⚡Vol({df['Volume'].iloc[-1] / vol_avg:.1f}x)")
 
-            # Flex Node 4: Linear Regression Channel (LRC Slope)
+            # Node 3: Linear Regression Channel Slope
             y = df['Close'].tail(14).values
             slope, intercept = np.polyfit(np.arange(len(y)), y, 1)
-            lrc_dir = "UP" if slope > 0 else "DOWN"
             if (not is_reversed and slope > 0) or (is_reversed and slope < 0):
                 flex_score += 1
-                sigs.append(f"LRC:{lrc_dir}")
+                sigs.append("LRC:UP" if slope > 0 else "LRC:DOWN")
 
             confidence_label = "⭐" * flex_score if flex_score > 0 else "⚪ Low"
 
@@ -182,7 +174,7 @@ def process_core_flex_strategy(data, is_reversed=False):
                 elif trade['type'] == 'SELL':
                     if cmp <= trade['target']: status = "🎯 TARGET HIT"
                     elif cmp >= trade['sl']: status = "🛑 SL HIT"
-            elif vol_surge: # Core entry condition met
+            elif vol_surge and trend_aligned: # Strict Entry condition requiring trend confirmation + volume
                 if not is_reversed:
                     t_type = "BUY" if cmp > c_open else "SELL"
                 else:
@@ -190,7 +182,8 @@ def process_core_flex_strategy(data, is_reversed=False):
                 
                 entry = cmp
                 target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
-                sl = entry * (1 - sl_pct) if t_type == "BUY" else entry * (1 + sl_pct)
+                # Dynamic ATR-based Stop Loss to prevent whipsaws
+                sl = (entry - (sl_atr_mult * atr)) if t_type == "BUY" else (entry + (sl_atr_mult * atr))
                 
                 st.session_state.dual_trades[strategy_key][symbol] = {
                     'entry': entry, 'target': target, 'sl': sl, 'type': t_type, 
@@ -206,7 +199,7 @@ def process_core_flex_strategy(data, is_reversed=False):
 
             results.append({
                 "Stock": f"⚡ {symbol}", "Trade": f"{'🟢' if t_type=='BUY' else '🔴'} {t_type}" if t_type else "⏳ Ready",
-                "Qty": int(capital // cmp), "CMP": cmp, "Entry": trade['entry'] if trade else 0.0,
+                "Qty": int(capital // cmp) if cmp > 0 else 0, "CMP": cmp, "Entry": trade['entry'] if trade else 0.0,
                 "SL": trade['sl'] if trade else 0.0, "Target": trade['target'] if trade else 0.0,
                 "Confidence": confidence_label, "Signal Details": " | ".join(sigs) if sigs else "Core Trigger Only",
                 "Status": status, "Time": e_time, "InTrade": 1 if trade else 0, "ROC_Val": abs(roc_val)
