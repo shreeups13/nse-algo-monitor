@@ -95,7 +95,7 @@ except Exception:
 
 st.subheader(f"🕰️ IST: {ist_now.strftime('%H:%M:%S')} | {status_text}")
 
-# --- REFINED STRATEGY ENGINE WITH ATR & EMA FILTER ---
+# --- STRATEGY ENGINE WITH ATR & EMA FILTER ---
 def process_core_flex_strategy(data, is_reversed=False):
     if data.empty or not isinstance(data.columns, pd.MultiIndex): return pd.DataFrame()
     results = []
@@ -115,17 +115,17 @@ def process_core_flex_strategy(data, is_reversed=False):
             
             if cmp < filter_min_price or cmp > filter_max_price: continue
 
-            # --- FILTER 1: ATR Calculation (Volatility Buffer) ---
+            # --- ATR Calculation (Volatility Buffer) ---
             high, low, close = df['High'], df['Low'], df['Close']
             prev_close = close.shift(1)
             tr = np.maximum((high - low), np.maximum(np.abs(high - prev_close), np.abs(low - prev_close)))
             atr = float(tr.rolling(14).mean().iloc[-1])
 
-            # --- FILTER 2: Robust Volume Surge vs MA(20) ---
+            # --- Volume Surge vs MA(20) ---
             vol_avg = df['Volume'].rolling(20).mean().iloc[-1]
             vol_surge = df['Volume'].iloc[-1] >= (vol_avg * vol_multiplier)
             
-            # --- FILTER 3: ROC Velocity (10-bar window for smoother momentum) ---
+            # --- ROC Velocity (10-bar window) ---
             p10 = df['Close'].iloc[-11] if len(df) >= 11 else df['Close'].iloc[0]
             roc_val = ((cmp - p10) / p10) * 100
             
@@ -135,7 +135,7 @@ def process_core_flex_strategy(data, is_reversed=False):
             flex_score = 0
             sigs = []
 
-            # Node 1: EMA Trend Alignment (9 vs 21 vs 50)
+            # EMA Trend Stack
             ema9 = df['Close'].ewm(span=9).mean().iloc[-1]
             ema21 = df['Close'].ewm(span=21).mean().iloc[-1]
             ema50 = df['Close'].ewm(span=50).mean().iloc[-1] if len(df) >= 50 else ema21
@@ -145,12 +145,12 @@ def process_core_flex_strategy(data, is_reversed=False):
                 flex_score += 2
                 sigs.append("✓EMA Trend Stack")
 
-            # Node 2: Volume Magnitude
+            # Volume Magnitude
             if vol_surge:
                 flex_score += 1
                 sigs.append(f"⚡Vol({df['Volume'].iloc[-1] / vol_avg:.1f}x)")
 
-            # Node 3: Linear Regression Channel Slope
+            # Linear Regression Channel Slope
             y = df['Close'].tail(14).values
             slope, intercept = np.polyfit(np.arange(len(y)), y, 1)
             if (not is_reversed and slope > 0) or (is_reversed and slope < 0):
@@ -174,7 +174,7 @@ def process_core_flex_strategy(data, is_reversed=False):
                 elif trade['type'] == 'SELL':
                     if cmp <= trade['target']: status = "🎯 TARGET HIT"
                     elif cmp >= trade['sl']: status = "🛑 SL HIT"
-            elif vol_surge and trend_aligned: # Strict Entry condition requiring trend confirmation + volume
+            elif vol_surge and trend_aligned:
                 if not is_reversed:
                     t_type = "BUY" if cmp > c_open else "SELL"
                 else:
@@ -182,7 +182,7 @@ def process_core_flex_strategy(data, is_reversed=False):
                 
                 entry = cmp
                 target = entry * (1 + target_pct) if t_type == "BUY" else entry * (1 - target_pct)
-                # Dynamic ATR-based Stop Loss to prevent whipsaws
+                # Dynamic ATR-based Stop Loss
                 sl = (entry - (sl_atr_mult * atr)) if t_type == "BUY" else (entry + (sl_atr_mult * atr))
                 
                 st.session_state.dual_trades[strategy_key][symbol] = {
