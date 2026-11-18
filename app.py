@@ -50,7 +50,7 @@ with st.sidebar:
     st.header("⚙️ Execution Settings")
     capital = st.number_input("Capital (₹)", min_value=1000, value=5000, step=1000)
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.2) / 100
-    sl_atr_mult = st.slider("Stop Loss ATR Multiplier", 0.5, 3.0, 1.5, step=0.1)
+    sl_atr_mult = st.slider("Stop Loss ATR Multiplier", 0.5, 5.0, 1.5, step=0.1)
     
     st.markdown("---")
     st.subheader("⚡ Core Entry Controls")
