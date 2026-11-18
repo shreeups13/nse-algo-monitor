@@ -50,11 +50,11 @@ with st.sidebar:
     st.header("⚙️ Execution Settings")
     capital = st.number_input("Capital (₹)", min_value=1000, value=5000, step=1000)
     target_pct = st.slider("Target (%)", 0.5, 5.0, 1.2) / 100
-    sl_atr_mult = st.slider("Stop Loss ATR Multiplier", 0.5, 5.0, 1.5, step=0.1)
+    sl_atr_mult = st.slider("Stop Loss ATR Multiplier", 0.5, 3.0, 1.5, step=0.1)
     
     st.markdown("---")
     st.subheader("⚡ Core Entry Controls")
-    vol_multiplier = st.slider("Min Volume Surge vs MA(20)", 1.0, 5.0, 1.5, step=0.05)
+    vol_multiplier = st.slider("Min Volume Surge vs MA(20)", 1.0, 3.0, 1.5, step=0.05)
     filter_min_price = st.number_input("Min Stock Price (₹)", min_value=0.0, value=30.0, step=10.0)
     filter_max_price = st.number_input("Max Stock Price (₹)", min_value=0.0, value=2000.0, step=100.0)
     
