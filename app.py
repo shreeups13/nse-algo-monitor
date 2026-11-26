@@ -1,3 +1,5 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 import yfinance as yf
@@ -45,11 +47,12 @@ WATCHLIST = [
     "ZYDUSWELL", "FACT", "RAMCOCEM", "TRIDENT", "UTIAMC", "EIHOTEL", "DOMS", "ITI",
 ]
 
-st.set_page_config(page_title="NSE Watchlist Mover Scanner", page_icon="📈", layout="wide")
+IST = ZoneInfo("Asia/Kolkata")
+st.set_page_config(page_title="NSE Live Movement Scanner", page_icon="📈", layout="wide")
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def fetch_watchlist_movers(tickers: tuple[str, ...], rvol_lookback: int = 5) -> pd.DataFrame:
+@st.cache_data(ttl=55, show_spinner=False)
+def fetch_watchlist_movers(tickers: tuple[str, ...], rvol_lookback: int = 5) -> tuple[pd.DataFrame, str]:
     nse_symbols = [f"{t.strip()}.NS" for t in tickers]
 
     data = yf.download(
@@ -62,7 +65,9 @@ def fetch_watchlist_movers(tickers: tuple[str, ...], rvol_lookback: int = 5) -> 
         progress=False,
     )
 
+    fetched_at = datetime.now(IST).strftime("%d %b %Y, %I:%M:%S %p IST")
     rows = []
+
     for raw_ticker, nse_sym in zip(tickers, nse_symbols):
         try:
             df = data[nse_sym].dropna(subset=["Close", "Volume"])
@@ -80,11 +85,14 @@ def fetch_watchlist_movers(tickers: tuple[str, ...], rvol_lookback: int = 5) -> 
             rvol = round(last_vol / avg_vol, 2) if avg_vol > 0 else 0.0
             chg_pct = round(((last_close - prev_close) / prev_close) * 100, 2) if prev_close > 0 else 0.0
             range_pct = round(((last_high - last_low) / last_low) * 100, 2) if last_low > 0 else 0.0
+            direction = "BULLISH" if chg_pct > 0 else ("BEARISH" if chg_pct < 0 else "FLAT")
 
             rows.append({
                 "ticker": raw_ticker,
+                "direction": direction,
                 "ltp": round(last_close, 2),
                 "chg_pct": chg_pct,
+                "abs_chg_pct": abs(chg_pct),
                 "rvol": rvol,
                 "volume_lakhs": round(last_vol / 1e5, 2),
                 "range_pct": range_pct,
@@ -97,20 +105,25 @@ def fetch_watchlist_movers(tickers: tuple[str, ...], rvol_lookback: int = 5) -> 
 
     result = pd.DataFrame(rows)
     if result.empty:
-        return result
-    return result.sort_values(by="chg_pct", ascending=False).reset_index(drop=True)
+        return result, fetched_at
+    return result.sort_values(by="abs_chg_pct", ascending=False).reset_index(drop=True), fetched_at
 
 
 def render_table(df: pd.DataFrame, key_suffix: str) -> None:
+    display_cols = [
+        "ticker", "direction", "ltp", "chg_pct", "rvol",
+        "volume_lakhs", "range_pct", "open", "high", "low"
+    ]
     st.dataframe(
-        df,
+        df[display_cols],
         use_container_width=True,
         hide_index=True,
         key=f"tbl_{key_suffix}",
         column_config={
             "ticker": st.column_config.TextColumn("Symbol", width="small"),
+            "direction": st.column_config.TextColumn("Trend", width="small"),
             "ltp": st.column_config.NumberColumn("LTP (₹)", format="₹%.2f"),
-            "chg_pct": st.column_config.NumberColumn("Change %", format="%.2f%%"),
+            "chg_pct": st.column_config.NumberColumn("Change %", format="%+.2f%%"),
             "rvol": st.column_config.ProgressColumn(
                 "RVOL",
                 format="%.2fx",
@@ -126,69 +139,90 @@ def render_table(df: pd.DataFrame, key_suffix: str) -> None:
     )
 
 
-st.title("NSE Watchlist Mover Scanner")
-st.caption("Intraday % change, relative volume (RVOL), and range scan across your custom NSE ticker list.")
+st.title("NSE Live Movement Scanner")
 
 with st.sidebar:
-    st.header("Scan Filters")
+    st.header("Movement Filters")
+    auto_refresh = st.toggle("Auto-Refresh (Every 1 Min)", value=True)
+    direction_filter = st.radio(
+        "Movement Direction",
+        options=["All Movers", "Bullish Only (+)", "Bearish Only (-)"],
+        index=0,
+    )
     rvol_lookback = st.slider("RVOL Lookback (Days)", min_value=3, max_value=20, value=5)
-    min_abs_move = st.slider("Min |Change %|", min_value=0.0, max_value=10.0, value=2.0, step=0.25)
+    min_abs_move = st.slider("Min |Change %|", min_value=0.5, max_value=10.0, value=2.0, step=0.25)
     min_rvol = st.slider("Min RVOL", min_value=0.0, max_value=10.0, value=1.5, step=0.25)
     min_vol_lakhs = st.number_input("Min Volume (Lakhs)", min_value=0.0, value=5.0, step=5.0)
-    search_ticker = st.text_input("Filter Symbol", placeholder="e.g. MCX, INFY, IREDA").strip().upper()
+    search_ticker = st.text_input("Search Symbol", placeholder="e.g. MCX, INFY, IREDA").strip().upper()
 
-    if st.button("Refresh Data", type="primary", use_container_width=True):
+    if st.button("Force Refresh Now", type="primary", use_container_width=True):
         fetch_watchlist_movers.clear()
 
-with st.spinner("Scanning NSE watchlist via Yahoo Finance..."):
-    df_all = fetch_watchlist_movers(tuple(WATCHLIST), rvol_lookback=rvol_lookback)
 
-if df_all.empty:
-    st.warning("No market data returned right now. Try clicking Refresh Data or check Yahoo Finance connectivity.")
-    st.stop()
+@st.fragment(run_every=60 if auto_refresh else None)
+def live_scanner_panel() -> None:
+    with st.spinner("Fetching latest NSE quotes..."):
+        df_all, last_updated = fetch_watchlist_movers(tuple(WATCHLIST), rvol_lookback=rvol_lookback)
 
-filtered = df_all[
-    (df_all["chg_pct"].abs() >= min_abs_move)
-    & (df_all["rvol"] >= min_rvol)
-    & (df_all["volume_lakhs"] >= min_vol_lakhs)
-]
-if search_ticker:
-    filtered = filtered[filtered["ticker"].str.contains(search_ticker, na=False)]
-
-top_gainer = df_all.iloc[0]
-top_loser = df_all.iloc[-1]
-high_rvol_count = int((df_all["rvol"] >= min_rvol).sum())
-
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Scanned Stocks", len(df_all))
-c2.metric("Top Gainer", top_gainer["ticker"], f"{top_gainer['chg_pct']:+.2f}%")
-c3.metric("Top Loser", top_loser["ticker"], f"{top_loser['chg_pct']:+.2f}%")
-c4.metric(f"RVOL >= {min_rvol:.2f}x", high_rvol_count)
-
-tab_bull, tab_bear, tab_rvol, tab_all = st.tabs([
-    "Bullish Movers",
-    "Bearish Movers",
-    "High RVOL + Move",
-    "All Filtered",
-])
-
-with tab_bull:
-    bull_df = filtered[filtered["chg_pct"] > 0].sort_values(by="chg_pct", ascending=False)
-    render_table(bull_df, "bull")
-
-with tab_bear:
-    bear_df = filtered[filtered["chg_pct"] < 0].sort_values(by="chg_pct", ascending=True)
-    render_table(bear_df, "bear")
-
-with tab_rvol:
-    rvol_df = filtered.sort_values(by="rvol", ascending=False)
-    render_table(rvol_df, "rvol")
-
-with tab_all:
-    render_table(filtered, "all")
-    st.download_button(
-        label="Download Filtered CSV",
-        data=filtered.to_csv(index=False).encode("utf-8"),
-        file_name="nse_watchlist_movers.csv",
-        mime="text/csv",
+    st.caption(
+        f"🕒 **Last Refreshed:** `{last_updated}`  |  "
+        f"**Auto-Refresh:** `{'ON (60s)' if auto_refresh else 'PAUSED'}`"
     )
+
+    if df_all.empty:
+        st.warning("No market data returned right now. Click Force Refresh Now or check connectivity.")
+        return
+
+    # Filter strictly active movement stocks based on sidebar thresholds
+    movers = df_all[
+        (df_all["abs_chg_pct"] >= min_abs_move)
+        & (df_all["rvol"] >= min_rvol)
+        & (df_all["volume_lakhs"] >= min_vol_lakhs)
+    ]
+
+    if direction_filter == "Bullish Only (+)":
+        movers = movers[movers["chg_pct"] > 0]
+    elif direction_filter == "Bearish Only (-)":
+        movers = movers[movers["chg_pct"] < 0]
+
+    if search_ticker:
+        movers = movers[movers["ticker"].str.contains(search_ticker, na=False)]
+
+    # Summary KPIs
+    by_chg = df_all.sort_values(by="chg_pct", ascending=False)
+    top_gainer = by_chg.iloc[0]
+    top_loser = by_chg.iloc[-1]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Active Movers Found", f"{len(movers)} / {len(df_all)}")
+    c2.metric("Top Gainer", top_gainer["ticker"], f"{top_gainer['chg_pct']:+.2f}%")
+    c3.metric("Top Loser", top_loser["ticker"], f"{top_loser['chg_pct']:+.2f}%")
+    c4.metric("High RVOL Movers", int((movers["rvol"] >= 2.0).sum()))
+
+    tab_movers, tab_bull, tab_bear, tab_rvol = st.tabs([
+        f"Current Movers ({len(movers)})",
+        f"Bullish ({int((movers['chg_pct'] > 0).sum())})",
+        f"Bearish ({int((movers['chg_pct'] < 0).sum())})",
+        "Ranked by RVOL",
+    ])
+
+    with tab_movers:
+        render_table(movers.sort_values(by="abs_chg_pct", ascending=False), "movers")
+        st.download_button(
+            label="Export Current Movers CSV",
+            data=movers.to_csv(index=False).encode("utf-8"),
+            file_name=f"nse_movers_{datetime.now(IST).strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+        )
+
+    with tab_bull:
+        render_table(movers[movers["chg_pct"] > 0].sort_values(by="chg_pct", ascending=False), "bull")
+
+    with tab_bear:
+        render_table(movers[movers["chg_pct"] < 0].sort_values(by="chg_pct", ascending=True), "bear")
+
+    with tab_rvol:
+        render_table(movers.sort_values(by="rvol", ascending=False), "rvol")
+
+
+live_scanner_panel()
