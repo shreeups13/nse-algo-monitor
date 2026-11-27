@@ -1,7 +1,11 @@
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import numpy as np
+import pandas as pd
 import streamlit as st
 import yfinance as yf
-import pandas as pd
-import numpy as np
 
 st.set_page_config(page_title="NSE Intraday & Scalping Scanner", layout="wide")
 
@@ -12,6 +16,9 @@ RAW_STOCKS = """KOTAKBANK,HDFCBANK,RELIANCE,BSE,ICICIBANK,TARIL,M&M,INFY,BAJAJ-A
 
 # Sidebar Controls
 st.sidebar.header("⚡ Intraday Parameters")
+auto_refresh = st.sidebar.toggle("Auto-Refresh Every 1 Min", value=True)
+refresh_sec = 60
+
 interval = st.sidebar.selectbox("Candle Interval", ["5m", "15m", "1m"], index=0)
 period_map = {"1m": "2d", "5m": "5d", "15m": "10d"}
 fast_ema = st.sidebar.number_input("Fast EMA", min_value=3, max_value=25, value=9)
@@ -44,7 +51,7 @@ def calc_atr(df, period=14):
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     return tr.rolling(period).mean()
 
-@st.cache_data(ttl=120)  # Refresh every 2 minutes for intraday use
+@st.cache_data(ttl=55)  # Refresh cache just under 1 minute for live polling
 def scan_intraday(symbols, tf, fast_p, slow_p, vol_thresh, atr_k):
     tickers = [f"{s.strip()}.NS" for s in symbols if s.strip()]
     data = yf.download(
@@ -120,26 +127,41 @@ def scan_intraday(symbols, tf, fast_p, slow_p, vol_thresh, atr_k):
 
     return pd.DataFrame(rows)
 
-if st.button("⚡ Scan Intraday Signals", type="primary") or True:
-    with st.spinner(f"Scanning {interval} candles across watchlist..."):
-        out = scan_intraday(stock_input.split(","), interval, fast_ema, slow_ema, vol_mult, atr_mult)
+col_btn, col_ts = st.columns([1, 3])
+with col_btn:
+    manual_scan = st.button("⚡ Scan Now", type="primary")
 
-    if out.empty:
-        st.info("No active intraday signals match your current volume and momentum thresholds.")
-    else:
-        longs = out[out["Action"] == "BUY (LONG)"].sort_values(by="Vol Spike (x)", ascending=False)
-        shorts = out[out["Action"] == "SELL (SHORT / EXIT)"].sort_values(by="Vol Spike (x)", ascending=False)
+if manual_scan:
+    scan_intraday.clear()
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("🟢 Buy Setups", len(longs))
-        c2.metric("🔴 Sell / Short Setups", len(shorts))
-        c3.metric("⚡ Total Active Alerts", len(out))
+ist_now = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")
+with col_ts:
+    status_mode = "Auto-refreshing every 60s" if auto_refresh else "Manual mode"
+    st.caption(f"🕒 **Last Scan Timestamp:** `{ist_now}` | **Interval:** `{interval}` | **Mode:** `{status_mode}`")
 
-        st.subheader("🟢 Intraday BUY Setups")
-        st.dataframe(longs, use_container_width=True, hide_index=True)
+with st.spinner(f"Scanning {interval} candles across watchlist..."):
+    out = scan_intraday(stock_input.split(","), interval, fast_ema, slow_ema, vol_mult, atr_mult)
 
-        st.subheader("🔴 Intraday SELL / SHORT Setups")
-        st.dataframe(shorts, use_container_width=True, hide_index=True)
+if out.empty:
+    st.info(f"No active intraday signals match your current volume and momentum thresholds as of {ist_now}.")
+else:
+    longs = out[out["Action"] == "BUY (LONG)"].sort_values(by="Vol Spike (x)", ascending=False)
+    shorts = out[out["Action"] == "SELL (SHORT / EXIT)"].sort_values(by="Vol Spike (x)", ascending=False)
 
-        st.subheader("📋 All Active Signals & Spikes")
-        st.dataframe(out, use_container_width=True, hide_index=True)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🟢 Buy Setups", len(longs))
+    c2.metric("🔴 Sell / Short Setups", len(shorts))
+    c3.metric("⚡ Total Active Alerts", len(out))
+
+    st.subheader("🟢 Intraday BUY Setups")
+    st.dataframe(longs, use_container_width=True, hide_index=True)
+
+    st.subheader("🔴 Intraday SELL / SHORT Setups")
+    st.dataframe(shorts, use_container_width=True, hide_index=True)
+
+    st.subheader("📋 All Active Signals & Spikes")
+    st.dataframe(out, use_container_width=True, hide_index=True)
+
+if auto_refresh:
+    time.sleep(refresh_sec)
+    st.rerun()
